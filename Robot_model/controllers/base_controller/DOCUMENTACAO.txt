@@ -1,0 +1,896 @@
+DOCUMENTACAO DO CONTROLLER PIONEER3-AT COM GYMNASIUM E STABLE-BASELINES3
+=======================================================================
+
+Este arquivo descreve a organizacao dos codigos do controller localizado em:
+
+Robot_model/controllers/base_controller/
+
+A ideia geral da refatoracao foi separar responsabilidades:
+
+- config.py: constantes gerais do projeto.
+- actions.py: enum com as acoes discretas do robo.
+- devices.py: acesso aos sensores e motores do Webots.
+- rewards.py: funcoes de recompensa.
+- environment.py: ambiente Gymnasium.
+- base_controller.py: ponto de entrada do Webots, criacao do ambiente, modelo e treino.
+
+
+ARQUIVO: config.py
+==================
+
+Objetivo
+--------
+Centralizar constantes usadas pelo projeto para evitar numeros magicos espalhados
+pelo codigo.
+
+Constantes
+----------
+
+HISTORY = 5
+    Quantidade maxima de leituras guardadas por sensor para calcular a media movel.
+
+NUM_SENSORS = 16
+    Numero de sensores de distancia usados pelo Pioneer3-AT.
+    O codigo busca sensores de "so0" ate "so15".
+
+FORWARD_SPEED = 3.0
+    Velocidade aplicada aos quatro motores quando a acao e andar para frente.
+
+TURN_SPEED = 4.0
+    Velocidade usada nas rodas para girar o robo para esquerda ou direita.
+
+SENSOR_LIMIT = 1024.0
+    Valor usado para normalizar as leituras dos sensores.
+    Uma leitura bruta e dividida por este valor e depois limitada ao intervalo
+    entre 0.0 e 1.0.
+
+COLLISION_THRESHOLD = 0.8
+    Limite usado para considerar colisao ou perigo critico.
+    Se o maior valor normalizado dos sensores for maior ou igual a este limite,
+    o ambiente considera que houve colisao.
+
+MAX_STEPS = 1000
+    Numero maximo de steps por episodio.
+    Quando current_step chega a este valor, o episodio e truncado.
+
+FRONT_SENSOR_IDS = (2, 3, 4, 5)
+    Indices dos sensores usados para medir perigo frontal.
+
+LEFT_SENSOR_IDS = (0, 1, 2)
+    Indices dos sensores usados para medir perigo do lado esquerdo.
+
+RIGHT_SENSOR_IDS = (5, 6, 7)
+    Indices dos sensores usados para medir perigo do lado direito.
+
+Como usar
+---------
+Importe as constantes onde forem necessarias:
+
+    from config import MAX_STEPS, SENSOR_LIMIT, COLLISION_THRESHOLD
+
+
+ARQUIVO: actions.py
+===================
+
+Objetivo
+--------
+Definir nomes legiveis para as acoes discretas do robo.
+
+Classe: Action(IntEnum)
+----------------------
+Enum inteiro usado pelo ambiente, pelas rodas e pelas funcoes de recompensa.
+Como herda de IntEnum, pode ser convertido para int e tambem pode receber um int.
+
+Valores
+-------
+
+Action.STOP = 0
+    Para o robo.
+
+Action.FORWARD = 1
+    Move o robo para frente.
+
+Action.TURN_LEFT = 2
+    Gira o robo para a esquerda.
+
+Action.TURN_RIGHT = 3
+    Gira o robo para a direita.
+
+Como usar
+---------
+
+    from actions import Action
+
+    action = Action(1)
+    if action == Action.FORWARD:
+        ...
+
+Retorno
+-------
+A classe em si nao tem uma funcao de retorno. Ela fornece constantes nomeadas
+que tambem funcionam como inteiros.
+
+
+ARQUIVO: devices.py
+===================
+
+Objetivo
+--------
+Concentrar o codigo que conversa diretamente com os dispositivos do Webots:
+sensores de distancia e motores das rodas.
+
+
+Funcao: consoleClear()
+----------------------
+Assinatura:
+
+    consoleClear()
+
+Objetivo:
+    Limpar o console usando sequencia ANSI.
+
+Argumentos:
+    Nenhum.
+
+Retorno:
+    Nao retorna valor. Apenas imprime a sequencia de limpeza no terminal.
+
+Observacao:
+    Esta funcao foi mantida por compatibilidade com o codigo anterior.
+
+
+Classe: DistanceSensors
+----------------------
+Responsavel por buscar, habilitar, ler e suavizar as leituras dos sensores de
+distancia do Pioneer3-AT.
+
+Metodo: __init__(self, robot, timestep)
+---------------------------------------
+Argumentos:
+    robot:
+        Objeto do Webots que deve fornecer getDevice(nome).
+        Normalmente e o Supervisor ou Robot criado no controller.
+
+    timestep:
+        Timestep usado para habilitar os sensores.
+        Normalmente vem de robot.getBasicTimeStep().
+
+O que faz:
+    - Cria a lista de nomes "so0" ate "so15".
+    - Busca cada sensor com robot.getDevice(nome).
+    - Habilita cada sensor com sensor.enable(timestep).
+    - Prepara listas internas para historico e medias.
+
+Retorno:
+    Nao retorna valor. Inicializa o objeto.
+
+Atributos principais:
+    self.sensors:
+        Lista com os sensores do Webots.
+
+    self.names:
+        Lista com os nomes dos sensores.
+
+    self.raw_values:
+        Lista de listas com o historico recente de cada sensor.
+
+    self.avg_values:
+        Lista com a media movel atual de cada sensor.
+
+
+Metodo: reset_history(self)
+---------------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Limpa o historico de leituras dos sensores e limpa as medias.
+    Deve ser chamado no reset do ambiente para iniciar um episodio sem leituras
+    antigas influenciando a observacao inicial.
+
+Retorno:
+    Nao retorna valor.
+
+
+Metodo: read_all(self)
+----------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    - Le todos os sensores com getValue().
+    - Adiciona a leitura ao historico de cada sensor.
+    - Mantem no maximo HISTORY leituras por sensor.
+    - Calcula a media movel de cada sensor.
+
+Retorno:
+    Lista de floats com NUM_SENSORS valores medios.
+    Exemplo conceitual:
+
+        [12.5, 9.0, 150.2, ..., 30.1]
+
+Como usar:
+
+    sensors = DistanceSensors(robot, timestep)
+    values = sensors.read_all()
+
+
+Classe: Wheels
+--------------
+Responsavel por buscar os motores do Pioneer3-AT e aplicar velocidades de acordo
+com uma acao discreta.
+
+Metodo: __init__(self, robot)
+-----------------------------
+Argumentos:
+    robot:
+        Objeto do Webots que deve fornecer getDevice(nome).
+
+O que faz:
+    - Busca os quatro motores:
+        "front left wheel"
+        "front right wheel"
+        "back left wheel"
+        "back right wheel"
+    - Coloca cada motor em modo velocidade com setPosition(float("inf")).
+    - Inicializa cada motor parado com setVelocity(0).
+
+Retorno:
+    Nao retorna valor. Inicializa o objeto.
+
+
+Metodo: stop(self)
+------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Define velocidade 0 para todos os motores.
+
+Retorno:
+    Nao retorna valor.
+
+
+Metodo: forward(self)
+---------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Define FORWARD_SPEED para todos os motores.
+
+Retorno:
+    Nao retorna valor.
+
+
+Metodo: turn_left(self)
+-----------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Gira o robo para a esquerda.
+    As rodas esquerdas recebem velocidade negativa e as direitas recebem
+    velocidade positiva.
+
+Retorno:
+    Nao retorna valor.
+
+
+Metodo: turn_right(self)
+------------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Gira o robo para a direita.
+    As rodas esquerdas recebem velocidade positiva e as direitas recebem
+    velocidade negativa.
+
+Retorno:
+    Nao retorna valor.
+
+
+Metodo: action(self, action)
+----------------------------
+Argumentos:
+    action:
+        Pode ser um int ou um Action.
+        Valores aceitos:
+            0 ou Action.STOP
+            1 ou Action.FORWARD
+            2 ou Action.TURN_LEFT
+            3 ou Action.TURN_RIGHT
+
+O que faz:
+    Converte o argumento para Action e chama internamente:
+        stop()
+        forward()
+        turn_left()
+        turn_right()
+
+Retorno:
+    Nao retorna valor.
+
+Como usar:
+
+    wheels = Wheels(robot)
+    wheels.action(Action.FORWARD)
+    wheels.action(0)
+
+
+ARQUIVO: rewards.py
+===================
+
+Objetivo
+--------
+Guardar as funcoes de recompensa separadas da logica do ambiente.
+Isso permite que PioneerBaseEnv e PioneerAdvancedEnv usem o mesmo step(), mudando
+apenas a funcao de recompensa.
+
+
+Funcao: simple_reward(action, dangers, collision)
+-------------------------------------------------
+Assinatura:
+
+    simple_reward(action, dangers, collision)
+
+Argumentos:
+    action:
+        Int ou Action representando a acao executada.
+
+    dangers:
+        Dicionario com os perigos calculados a partir da observacao normalizada.
+        Espera as chaves:
+            "max": maior valor entre todos os sensores.
+            "front": maior valor entre sensores frontais.
+            "left": maior valor entre sensores esquerdos.
+            "right": maior valor entre sensores direitos.
+
+    collision:
+        Booleano indicando se houve colisao.
+
+O que faz:
+    Implementa uma recompensa simples:
+    - colisao retorna -1.0;
+    - sem colisao comeca com recompensa base 0.1;
+    - andar para frente e recompensado quando a frente esta livre;
+    - andar para frente e punido quando ha muito perigo frontal;
+    - parar recebe pequena punicao;
+    - virar recebe recompensa se ha perigo frontal.
+
+Retorno:
+    Float com a recompensa calculada.
+
+Como usar:
+
+    reward = simple_reward(Action.FORWARD, dangers, collision)
+
+
+Funcao: advanced_reward(action, dangers, collision)
+---------------------------------------------------
+Assinatura:
+
+    advanced_reward(action, dangers, collision)
+
+Argumentos:
+    action:
+        Int ou Action representando a acao executada.
+
+    dangers:
+        Dicionario com as chaves "max", "front", "left" e "right".
+
+    collision:
+        Booleano indicando se houve colisao.
+
+O que faz:
+    Implementa uma recompensa mais detalhada:
+    - colisao retorna -10.0;
+    - sem colisao comeca com recompensa base 0.05;
+    - perigo geral reduz a recompensa;
+    - perigo frontal reduz ainda mais a recompensa;
+    - andar para frente e bastante recompensado quando a frente esta livre;
+    - virar e recompensado quando existe obstaculo frontal;
+    - virar para o lado mais seguro recebe bonus extra.
+
+Retorno:
+    Float com a recompensa calculada.
+
+Como usar:
+
+    reward = advanced_reward(Action.TURN_LEFT, dangers, collision)
+
+
+ARQUIVO: environment.py
+=======================
+
+Objetivo
+--------
+Definir os ambientes Gymnasium do Pioneer3-AT.
+Este arquivo deve cuidar do contrato do Gymnasium:
+
+    reset() -> observation, info
+    step(action) -> observation, reward, terminated, truncated, info
+
+Ele tambem centraliza:
+    - leitura e normalizacao das observacoes;
+    - calculo dos perigos;
+    - aplicacao de acoes;
+    - reset da pose do robo usando Supervisor;
+    - controle de termino/truncamento do episodio.
+
+
+Classe: PioneerBaseEnv(gym.Env)
+-------------------------------
+Ambiente base usando a recompensa simples.
+
+Atributos importantes:
+    action_space:
+        spaces.Discrete(len(Action)).
+        Atualmente equivale a Discrete(4).
+
+    observation_space:
+        spaces.Box(low=0.0, high=1.0, shape=(NUM_SENSORS,), dtype=np.float32).
+        Atualmente equivale a Box de 16 valores normalizados.
+
+    metadata:
+        {"render_modes": []}
+
+
+Metodo: __init__(self, robot, timestep=None, max_steps=MAX_STEPS,
+                 sensor_limit=SENSOR_LIMIT,
+                 collision_threshold=COLLISION_THRESHOLD)
+-----------------------------------------------------------------
+Argumentos:
+    robot:
+        Objeto Supervisor ou Robot do Webots.
+        Deve fornecer:
+            getBasicTimeStep()
+            getDevice(nome)
+            step(timestep)
+        Se for Supervisor, tambem pode fornecer:
+            getSelf()
+            simulationResetPhysics()
+
+    timestep:
+        Timestep do Webots.
+        Se for None, usa robot.getBasicTimeStep().
+
+    max_steps:
+        Numero maximo de steps por episodio.
+
+    sensor_limit:
+        Valor usado para normalizar sensores.
+
+    collision_threshold:
+        Limite normalizado usado para detectar colisao.
+
+O que faz:
+    - Salva parametros do ambiente.
+    - Cria DistanceSensors.
+    - Cria Wheels.
+    - Se possivel, salva translation e rotation iniciais via Supervisor.
+    - Define action_space.
+    - Define observation_space.
+
+Retorno:
+    Nao retorna valor. Inicializa o ambiente.
+
+
+Metodo: reset(self, seed=None, options=None)
+--------------------------------------------
+Argumentos:
+    seed:
+        Seed opcional do Gymnasium.
+
+    options:
+        Argumento opcional do Gymnasium.
+        Atualmente nao e usado diretamente.
+
+O que faz:
+    - Chama super().reset(seed=seed).
+    - Zera current_step.
+    - Para o robo.
+    - Restaura a pose inicial se estiver usando Supervisor.
+    - Limpa historico dos sensores.
+    - Executa um step no Webots para atualizar sensores.
+    - Le a observacao inicial.
+    - Calcula informacoes basicas.
+
+Retorno:
+    Tupla:
+
+        observation, info
+
+    observation:
+        np.ndarray com shape (NUM_SENSORS,), dtype np.float32, valores entre
+        0.0 e 1.0.
+
+    info:
+        Dicionario com:
+            "max_sensor_normalized": maior valor normalizado dos sensores.
+            "step": step atual, normalmente 0 no reset.
+
+
+Metodo: step(self, action)
+--------------------------
+Argumentos:
+    action:
+        Acao discreta aceita pelo action_space.
+        Pode ser int 0, 1, 2, 3 ou Action equivalente.
+
+O que faz:
+    - Verifica se a acao pertence ao action_space.
+    - Converte a acao para Action.
+    - Incrementa current_step.
+    - Aplica a acao nas rodas.
+    - Avanca a simulacao do Webots com robot.step(timestep).
+    - Le e normaliza a observacao.
+    - Calcula dangers.
+    - Detecta colisao.
+    - Calcula recompensa chamando _calculate_reward().
+    - Define terminated e truncated.
+    - Monta info com _make_info().
+
+Retorno:
+    Tupla no formato Gymnasium:
+
+        observation, reward, terminated, truncated, info
+
+    observation:
+        np.ndarray normalizado entre 0.0 e 1.0.
+
+    reward:
+        Float com recompensa calculada.
+
+    terminated:
+        Booleano. True quando houve colisao.
+
+    truncated:
+        Booleano. True quando atingiu max_steps ou quando Webots retornou -1.
+
+    info:
+        Dicionario com:
+            "collision": bool
+            "action": int
+            "step": int
+            "max_sensor": float
+            "front_danger": float
+            "left_danger": float
+            "right_danger": float
+            "simulation_ok": bool
+
+
+Metodo: _calculate_reward(self, action, dangers, collision)
+-----------------------------------------------------------
+Argumentos:
+    action:
+        Action executada.
+
+    dangers:
+        Dicionario retornado por _get_dangers().
+
+    collision:
+        Booleano indicando colisao.
+
+O que faz:
+    No PioneerBaseEnv, chama simple_reward().
+
+Retorno:
+    Float com a recompensa.
+
+Observacao:
+    Este metodo existe para ser sobrescrito por subclasses.
+    PioneerAdvancedEnv sobrescreve este metodo para usar advanced_reward().
+
+
+Metodo: _make_info(self, action, dangers, collision, simulation_ok)
+-------------------------------------------------------------------
+Argumentos:
+    action:
+        Action executada.
+
+    dangers:
+        Dicionario com perigos.
+
+    collision:
+        Booleano indicando colisao.
+
+    simulation_ok:
+        Booleano indicando se robot.step() nao retornou -1.
+
+O que faz:
+    Centraliza a criacao do dicionario info retornado por step().
+
+Retorno:
+    Dicionario info.
+
+
+Metodo: _restore_robot_pose(self)
+---------------------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Se o robo for Supervisor e tiver robot_node:
+    - restaura translation inicial;
+    - restaura rotation inicial;
+    - chama resetPhysics() no node;
+    - chama simulationResetPhysics() se existir no robo.
+
+Retorno:
+    Nao retorna valor.
+
+
+Metodo: _get_observation(self)
+------------------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    - Chama distance_sensors.read_all().
+    - Converte os valores para np.float32.
+    - Divide por sensor_limit.
+    - Aplica np.clip() entre 0.0 e 1.0.
+
+Retorno:
+    np.ndarray com shape (NUM_SENSORS,), valores normalizados entre 0.0 e 1.0.
+
+
+Metodo: _get_dangers(self, observation)
+---------------------------------------
+Argumentos:
+    observation:
+        Vetor normalizado de sensores, normalmente retornado por _get_observation().
+
+O que faz:
+    Calcula os principais indicadores de perigo:
+    - max: perigo maximo geral.
+    - front: perigo frontal.
+    - left: perigo esquerdo.
+    - right: perigo direito.
+
+Retorno:
+    Dicionario:
+
+        {
+            "max": float,
+            "front": float,
+            "left": float,
+            "right": float,
+        }
+
+
+Metodo: _get_front_danger(self, observation)
+--------------------------------------------
+Argumentos:
+    observation:
+        Vetor normalizado de sensores.
+
+O que faz:
+    Seleciona os indices FRONT_SENSOR_IDS e retorna o maior valor.
+
+Retorno:
+    Float com perigo frontal.
+
+
+Metodo: _get_left_danger(self, observation)
+-------------------------------------------
+Argumentos:
+    observation:
+        Vetor normalizado de sensores.
+
+O que faz:
+    Seleciona os indices LEFT_SENSOR_IDS e retorna o maior valor.
+
+Retorno:
+    Float com perigo esquerdo.
+
+
+Metodo: _get_right_danger(self, observation)
+--------------------------------------------
+Argumentos:
+    observation:
+        Vetor normalizado de sensores.
+
+O que faz:
+    Seleciona os indices RIGHT_SENSOR_IDS e retorna o maior valor.
+
+Retorno:
+    Float com perigo direito.
+
+
+Metodo: close(self)
+-------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Para o robo chamando wheels.action(Action.STOP).
+
+Retorno:
+    Nao retorna valor.
+
+
+Classe: PioneerAdvancedEnv(PioneerBaseEnv)
+------------------------------------------
+Ambiente avancado que reaproveita todo o step() de PioneerBaseEnv.
+A unica diferenca e a funcao de recompensa.
+
+Metodo: _calculate_reward(self, action, dangers, collision)
+-----------------------------------------------------------
+Argumentos:
+    action:
+        Action executada.
+
+    dangers:
+        Dicionario com perigos.
+
+    collision:
+        Booleano indicando colisao.
+
+O que faz:
+    Chama advanced_reward(action, dangers, collision).
+
+Retorno:
+    Float com a recompensa avancada.
+
+
+ARQUIVO: base_controller.py
+===========================
+
+Objetivo
+--------
+Ser o ponto de entrada do controller do Webots.
+Este arquivo cria o Supervisor, escolhe ambiente, escolhe algoritmo, cria modelo,
+opcionalmente valida o ambiente com check_env e executa o treinamento.
+
+
+Variaveis de configuracao
+-------------------------
+
+ENV_TYPE = "advanced"
+    Define qual ambiente usar.
+    Valores aceitos:
+        "base"
+        "advanced"
+
+ALGORITHM = "PPO"
+    Define qual algoritmo usar.
+    Valores aceitos:
+        "PPO"
+        "DQN"
+
+TRAINING = True
+    Se True, treina o modelo.
+    Se False, cria o ambiente e fecha sem treinar.
+
+CHECK_ENV = False
+    Se True, chama check_env(env, warn=True).
+    Util para validar compatibilidade com Gymnasium/Stable-Baselines3.
+
+TOTAL_TIMESTEPS = 50_000
+    Quantidade de timesteps usada em model.learn().
+
+
+Funcao: make_env(robot)
+-----------------------
+Assinatura:
+
+    make_env(robot)
+
+Argumentos:
+    robot:
+        Supervisor do Webots.
+
+O que faz:
+    - Le ENV_TYPE.
+    - Escolhe PioneerBaseEnv ou PioneerAdvancedEnv.
+    - Cria o ambiente com MAX_STEPS, SENSOR_LIMIT e COLLISION_THRESHOLD vindos
+      de config.py.
+
+Retorno:
+    Instancia de PioneerBaseEnv ou PioneerAdvancedEnv.
+
+Erros:
+    Levanta ValueError se ENV_TYPE nao for "base" nem "advanced".
+
+Como usar:
+
+    robot = Supervisor()
+    env = make_env(robot)
+
+
+Funcao: make_model(env)
+-----------------------
+Assinatura:
+
+    make_model(env)
+
+Argumentos:
+    env:
+        Ambiente Gymnasium que sera usado pelo Stable-Baselines3.
+
+O que faz:
+    - Le ALGORITHM.
+    - Se ALGORITHM for "PPO", cria um modelo PPO.
+    - Se ALGORITHM for "DQN", cria um modelo DQN.
+
+Retorno:
+    Modelo Stable-Baselines3 pronto para chamar learn().
+    Pode retornar uma instancia de PPO ou DQN.
+
+Erros:
+    Levanta ValueError se ALGORITHM nao for "PPO" nem "DQN".
+
+Como usar:
+
+    model = make_model(env)
+    model.learn(total_timesteps=TOTAL_TIMESTEPS)
+
+
+Funcao: model_path()
+--------------------
+Assinatura:
+
+    model_path()
+
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Gera o nome do arquivo do modelo a partir de ALGORITHM.
+
+Retorno:
+    String:
+        "ppo_pioneer_model" se ALGORITHM = "PPO"
+        "dqn_pioneer_model" se ALGORITHM = "DQN"
+
+
+Funcao: main()
+--------------
+Assinatura:
+
+    main()
+
+Argumentos:
+    Nenhum.
+
+O que faz:
+    - Cria robot = Supervisor().
+    - Cria env = make_env(robot).
+    - Se CHECK_ENV for True, chama check_env(env, warn=True).
+    - Se TRAINING for False, fecha o ambiente e retorna.
+    - Cria model = make_model(env).
+    - Treina com model.learn(total_timesteps=TOTAL_TIMESTEPS).
+    - Salva com model.save(model_path()).
+    - Fecha o ambiente.
+
+Retorno:
+    Nao retorna valor explicito.
+
+Como usar:
+    Este arquivo e executado pelo Webots como controller.
+    Tambem pode ser executado diretamente em um ambiente que tenha as dependencias:
+
+        python base_controller.py
+
+
+FLUXO GERAL DE EXECUCAO
+=======================
+
+1. Webots executa base_controller.py.
+2. main() cria o Supervisor.
+3. make_env(robot) cria PioneerBaseEnv ou PioneerAdvancedEnv.
+4. O ambiente cria DistanceSensors e Wheels.
+5. make_model(env) cria PPO ou DQN.
+6. model.learn() chama reset() e step() varias vezes.
+7. Em cada step():
+    - a acao e aplicada nas rodas;
+    - Webots avanca um timestep;
+    - sensores sao lidos;
+    - observacao e normalizada;
+    - perigos sao calculados;
+    - recompensa e calculada;
+    - o resultado e retornado no formato Gymnasium.
+8. Ao final, o modelo e salvo e env.close() para o robo.

@@ -1,9 +1,12 @@
 .venv/
 __pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
 
+logs/
+*.zip
 Robot_model/controllers/base_controller/logs/
 Robot_model/controllers/base_controller/*.zip
 

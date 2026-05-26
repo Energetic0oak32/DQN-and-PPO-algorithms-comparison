@@ -1,72 +1,94 @@
 from controller import Supervisor
 
-from stable_baselines3 import PPO, DQN
+from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.env_checker import check_env
 
-from environment import PioneerAdvancedEnv as PioneerBaseEnv
+from config import COLLISION_THRESHOLD, MAX_STEPS, SENSOR_LIMIT
+from environment import PioneerAdvancedEnv, PioneerBaseEnv
 
 
-# Escolha aqui qual algoritmo usar
+ENV_TYPE = "advanced"
 ALGORITHM = "PPO"
-# ALGORITHM = "DQN"
-DEBUG_MODE = True
+TRAINING = True
+CHECK_ENV = False
+TOTAL_TIMESTEPS = 50_000
+
+
+def make_env(robot):
+    env_classes = {
+        "base": PioneerBaseEnv,
+        "advanced": PioneerAdvancedEnv,
+    }
+
+    try:
+        env_class = env_classes[ENV_TYPE.lower()]
+    except KeyError as exc:
+        raise ValueError(f"Unknown environment type: {ENV_TYPE}") from exc
+
+    return env_class(
+        robot=robot,
+        max_steps=MAX_STEPS,
+        sensor_limit=SENSOR_LIMIT,
+        collision_threshold=COLLISION_THRESHOLD,
+    )
+
+
+def make_model(env):
+    algorithm = ALGORITHM.upper()
+
+    if algorithm == "PPO":
+        return PPO(
+            policy="MlpPolicy",
+            env=env,
+            verbose=1,
+            learning_rate=3e-4,
+            n_steps=512,
+            batch_size=64,
+            gamma=0.99,
+            tensorboard_log="./logs/ppo_pioneer",
+        )
+
+    if algorithm == "DQN":
+        return DQN(
+            policy="MlpPolicy",
+            env=env,
+            verbose=1,
+            learning_rate=1e-4,
+            buffer_size=50_000,
+            learning_starts=1000,
+            batch_size=32,
+            gamma=0.99,
+            train_freq=4,
+            target_update_interval=1000,
+            exploration_fraction=0.2,
+            exploration_final_eps=0.05,
+            tensorboard_log="./logs/dqn_pioneer",
+        )
+
+    raise ValueError(f"Unknown algorithm: {ALGORITHM}")
+
+
+def model_path():
+    return f"{ALGORITHM.lower()}_pioneer_model"
 
 
 def main():
     robot = Supervisor()
+    env = make_env(robot)
 
-    if(DEBUG_MODE == False):
+    if CHECK_ENV:
+        check_env(env, warn=True)
 
-        env = PioneerBaseEnv(
-            robot=robot,
-            max_steps=1000,
-            sensor_limit=1024.0,
-            collision_threshold=0.8,
-        )
-
-        # Use isso uma vez para testar se o ambiente está certo.
-        # Depois pode comentar, porque ele executa resets e steps aleatórios.
-        #check_env(env, warn=True)
-
-        if ALGORITHM == "PPO":
-            model = PPO(
-                policy="MlpPolicy",
-                env=env,
-                verbose=1,
-                learning_rate=3e-4,
-                n_steps=512,
-                batch_size=64,
-                gamma=0.99,
-                tensorboard_log="./logs/ppo_pioneer",
-            )
-
-            model.learn(total_timesteps=50_000)
-            model.save("ppo_pioneer_model")
-
-        elif ALGORITHM == "DQN":
-            model = DQN(
-                policy="MlpPolicy",
-                env=env,
-                verbose=1,
-                learning_rate=1e-4,
-                buffer_size=50_000,
-                learning_starts=1000,
-                batch_size=32,
-                gamma=0.99,
-                train_freq=4,
-                target_update_interval=1000,
-                exploration_fraction=0.2,
-                exploration_final_eps=0.05,
-                tensorboard_log="./logs/dqn_pioneer",
-            )
-
-            model.learn(total_timesteps=50_000)
-            model.save("dqn_pioneer_model")
-
-        else:
-            raise ValueError(f"Algoritmo desconhecido: {ALGORITHM}")
-
+    if not TRAINING:
         env.close()
-    
-    else:
-        return 0
+        return
+
+    model = make_model(env)
+    model.learn(total_timesteps=TOTAL_TIMESTEPS)
+    model.save(model_path())
+
+    env.close()
+
+
+if __name__ == "__main__":
+    main()
