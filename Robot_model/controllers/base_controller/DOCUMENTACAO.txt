@@ -52,9 +52,13 @@ SENSOR_LIMIT = 1024.0
     entre 0.0 e 1.0.
 
 COLLISION_THRESHOLD = 0.8
-    Limite usado para considerar colisao ou perigo critico.
-    Se o maior valor normalizado dos sensores for maior ou igual a este limite,
-    o ambiente considera que houve colisao.
+    Limite frontal usado para considerar colisao ou perigo critico.
+    Se o perigo frontal for maior ou igual a este limite, o ambiente considera
+    que houve colisao.
+
+SIDE_COLLISION_THRESHOLD = 0.98
+    Limite geral usado para detectar proximidade extrema em qualquer direcao.
+    Permite seguir ao lado de paredes sem encerrar o episodio cedo demais.
 
 MAX_STEPS = 1000
     Numero maximo de steps por episodio.
@@ -73,7 +77,7 @@ Como usar
 ---------
 Importe as constantes onde forem necessarias:
 
-    from config import MAX_STEPS, SENSOR_LIMIT, COLLISION_THRESHOLD
+    from config import MAX_STEPS, SENSOR_LIMIT, COLLISION_THRESHOLD, SIDE_COLLISION_THRESHOLD
 
 
 ARQUIVO: actions.py
@@ -425,11 +429,11 @@ Retorno:
     Dicionario com as metricas calculadas.
 
 
-Funcao: reward(action, observation, dangers, collision)
--------------------------------------------------------
+Funcao: reward(action, observation, dangers, collision, distance_moved)
+-----------------------------------------------------------------------
 Assinatura:
 
-    reward(action, observation, dangers, collision)
+    reward(action, observation, dangers, collision, distance_moved)
 
 Argumentos:
     action:
@@ -444,13 +448,18 @@ Argumentos:
     collision:
         Booleano indicando se houve colisao.
 
+    distance_moved:
+        Distancia realmente percorrida pelo robo no ultimo step.
+
 O que faz:
     Implementa a recompensa usada pelo ambiente:
     - colisao retorna -10.0;
-    - sem colisao comeca com recompensa base 0.05;
-    - perigo geral e distribuicao dos obstaculos reduzem a recompensa;
-    - perigo frontal reduz ainda mais a recompensa;
+    - sem colisao comeca com recompensa base positiva 0.02;
+    - deslocamento fisico real recebe recompensa;
+    - perigo frontal reduz a recompensa;
+    - proximidade critica em qualquer direcao recebe penalidade adicional;
     - andar para frente e bastante recompensado quando a frente esta livre;
+    - seguir ao lado de uma parede sem obstaculo frontal recebe pequeno bonus;
     - virar e recompensado quando existe obstaculo frontal;
     - virar para o lado mais seguro recebe bonus extra baseado em picos e medias
       apenas quando existe obstaculo frontal;
@@ -462,7 +471,7 @@ Retorno:
 
 Como usar:
 
-    result = reward(Action.TURN_LEFT, observation, dangers, collision)
+    result = reward(Action.TURN_LEFT, observation, dangers, collision, distance_moved)
 
 
 ARQUIVO: environment.py
@@ -506,7 +515,8 @@ Atributos importantes:
 
 Metodo: __init__(self, robot, timestep=None, max_steps=MAX_STEPS,
                  sensor_limit=SENSOR_LIMIT,
-                 collision_threshold=COLLISION_THRESHOLD)
+                 collision_threshold=COLLISION_THRESHOLD,
+                 side_collision_threshold=SIDE_COLLISION_THRESHOLD)
 -----------------------------------------------------------------
 Argumentos:
     robot:
@@ -530,7 +540,10 @@ Argumentos:
         Valor usado para normalizar sensores.
 
     collision_threshold:
-        Limite normalizado usado para detectar colisao.
+        Limite frontal normalizado usado para detectar colisao.
+
+    side_collision_threshold:
+        Limite normalizado usado para proximidade extrema em qualquer direcao.
 
 O que faz:
     - Salva parametros do ambiente.
@@ -628,10 +641,13 @@ Retorno:
             "left_danger": float
             "right_danger": float
             "simulation_ok": bool
+            "distance_moved": float
+            "total_distance": float
 
 
-Metodo: _calculate_reward(self, action, observation, dangers, collision)
-------------------------------------------------------------------------
+Metodo: _calculate_reward(self, action, observation, dangers, collision,
+                          distance_moved)
+-----------------------------------------------------------
 Argumentos:
     action:
         Action executada.
@@ -645,15 +661,19 @@ Argumentos:
     collision:
         Booleano indicando colisao.
 
+    distance_moved:
+        Distancia percorrida pelo robo no ultimo step.
+
 O que faz:
-    Chama reward(action, observation, dangers, collision).
+    Chama reward(action, observation, dangers, collision, distance_moved).
 
 Retorno:
     Float com a recompensa.
 
 
-Metodo: _make_info(self, action, dangers, collision, simulation_ok)
--------------------------------------------------------------------
+Metodo: _make_info(self, action, dangers, collision, simulation_ok,
+                   distance_moved)
+----------------------------------
 Argumentos:
     action:
         Action executada.
@@ -666,6 +686,9 @@ Argumentos:
 
     simulation_ok:
         Booleano indicando se robot.step() nao retornou -1.
+
+    distance_moved:
+        Distancia percorrida pelo robo no ultimo step.
 
 O que faz:
     Centraliza a criacao do dicionario info retornado por step().
@@ -688,6 +711,24 @@ O que faz:
 
 Retorno:
     Nao retorna valor.
+
+
+Metodo: _get_robot_translation(self)
+------------------------------------
+O que faz:
+    Le a posicao atual do robo usando o campo translation do Supervisor.
+
+Retorno:
+    Lista com tres coordenadas ou None quando o node nao esta disponivel.
+
+
+Metodo: _get_distance_moved(self)
+---------------------------------
+O que faz:
+    Calcula a distancia percorrida desde o step anterior comparando translation.
+
+Retorno:
+    Float com a distancia percorrida.
 
 
 Metodo: _get_observation(self)
@@ -729,6 +770,21 @@ Retorno:
             "left": float,
             "right": float,
         }
+
+
+Metodo: _has_collision(self, dangers)
+-------------------------------------
+Argumentos:
+    dangers:
+        Dicionario com os indicadores de perigo.
+
+O que faz:
+    Considera colisao quando:
+    - perigo frontal atinge COLLISION_THRESHOLD; ou
+    - qualquer sensor atinge SIDE_COLLISION_THRESHOLD.
+
+Retorno:
+    Booleano indicando colisao.
 
 
 Metodo: _get_front_danger(self, observation)
@@ -809,8 +865,23 @@ CHECK_ENV = False
     Se True, chama check_env(env, warn=True).
     Util para validar compatibilidade com Gymnasium/Stable-Baselines3.
 
-TOTAL_TIMESTEPS = 50_000
+TOTAL_TIMESTEPS = 200_000
     Quantidade de timesteps usada em model.learn().
+
+CHECKPOINT_INTERVAL = 10_000
+    Intervalo usado para salvar o modelo durante o treinamento.
+    Evita perder toda a rodada caso a simulacao seja interrompida.
+
+MODEL_VERSION = "progress_v1"
+    Identifica checkpoints treinados com a reward baseada em deslocamento real.
+    Evita carregar automaticamente modelos antigos treinados com outra reward.
+
+
+Classe: SaveCheckpointCallback(BaseCallback)
+-------------------------------------------
+Callback chamado durante o treinamento.
+Salva o modelo a cada CHECKPOINT_INTERVAL passos.
+Para DQN, salva tambem o replay buffer.
 
 
 Funcao: make_env(robot)
@@ -824,8 +895,8 @@ Argumentos:
         Supervisor do Webots.
 
 O que faz:
-    - Cria PioneerEnv com MAX_STEPS, SENSOR_LIMIT e COLLISION_THRESHOLD vindos
-      de config.py.
+    - Cria PioneerEnv com MAX_STEPS, SENSOR_LIMIT, COLLISION_THRESHOLD e
+      SIDE_COLLISION_THRESHOLD vindos de config.py.
 
 Retorno:
     Instancia de PioneerEnv.
@@ -848,12 +919,16 @@ Argumentos:
 
 O que faz:
     - Le ALGORITHM.
-    - Se ALGORITHM for "PPO", cria um modelo PPO.
-    - Se ALGORITHM for "DQN", cria um modelo DQN.
+    - Procura o arquivo salvo correspondente ao algoritmo:
+        "ppo_pioneer_progress_v1_model.zip"
+        "dqn_pioneer_progress_v1_model.zip"
+    - Se o arquivo existir, carrega o modelo salvo com o ambiente atual.
+    - Para DQN, tambem carrega o replay buffer salvo quando ele existir.
+    - Se nao existir, cria um modelo novo PPO ou DQN.
 
 Retorno:
     Modelo Stable-Baselines3 pronto para chamar learn().
-    Pode retornar uma instancia de PPO ou DQN.
+    Pode retornar uma instancia nova ou carregada de PPO ou DQN.
 
 Erros:
     Levanta ValueError se ALGORITHM nao for "PPO" nem "DQN".
@@ -878,8 +953,40 @@ O que faz:
 
 Retorno:
     String:
-        "ppo_pioneer_model" se ALGORITHM = "PPO"
-        "dqn_pioneer_model" se ALGORITHM = "DQN"
+        "ppo_pioneer_progress_v1_model" se ALGORITHM = "PPO"
+        "dqn_pioneer_progress_v1_model" se ALGORITHM = "DQN"
+
+
+Funcao: replay_buffer_path()
+----------------------------
+Assinatura:
+
+    replay_buffer_path()
+
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Gera o nome do arquivo usado para persistir o replay buffer do DQN.
+
+Retorno:
+    String:
+        "dqn_pioneer_progress_v1_replay_buffer.pkl" se ALGORITHM = "DQN"
+
+
+Funcao: save_model(model, label)
+--------------------------------
+Argumentos:
+    model:
+        Modelo PPO ou DQN que deve ser salvo.
+
+    label:
+        Texto usado na mensagem exibida no console.
+
+O que faz:
+    - Salva o modelo no caminho retornado por model_path().
+    - Se o modelo for DQN, salva tambem o replay buffer.
+    - Exibe no console a quantidade de timesteps salva.
 
 
 Funcao: main()
@@ -896,10 +1003,12 @@ O que faz:
     - Cria env = make_env(robot).
     - Se CHECK_ENV for True, chama check_env(env, warn=True).
     - Se TRAINING for False, fecha o ambiente e retorna.
-    - Cria model = make_model(env).
-    - Treina com model.learn(total_timesteps=TOTAL_TIMESTEPS).
-    - Salva com model.save(model_path()).
-    - Fecha o ambiente.
+    - Cria ou carrega model = make_model(env).
+    - Exibe no console o ponto inicial e a quantidade adicional de timesteps.
+    - Treina com model.learn(), reset_num_timesteps=False e checkpoint periodico.
+    - Salva o modelo final.
+    - Se o usuario interromper o treinamento, salva o estado alcancado.
+    - Fecha o ambiente mesmo se ocorrer erro durante o treinamento.
 
 Retorno:
     Nao retorna valor explicito.
@@ -918,7 +1027,7 @@ FLUXO GERAL DE EXECUCAO
 2. main() cria o Supervisor.
 3. make_env(robot) cria PioneerEnv.
 4. O ambiente cria DistanceSensors e Wheels.
-5. make_model(env) cria PPO ou DQN.
+5. make_model(env) carrega um modelo existente ou cria PPO ou DQN.
 6. model.learn() chama reset() e step() varias vezes.
 7. Em cada step():
     - a acao e aplicada nas rodas;

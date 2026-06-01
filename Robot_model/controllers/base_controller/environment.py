@@ -11,6 +11,7 @@ from config import (
     OBSERVATION_SIZE,
     RIGHT_SENSOR_IDS,
     SENSOR_LIMIT,
+    SIDE_COLLISION_THRESHOLD,
     NUM_SENSORS,
 )
 from devices import DistanceSensors, Wheels
@@ -29,6 +30,7 @@ class PioneerEnv(gym.Env):
         max_steps=MAX_STEPS,
         sensor_limit=SENSOR_LIMIT,
         collision_threshold=COLLISION_THRESHOLD,
+        side_collision_threshold=SIDE_COLLISION_THRESHOLD,
     ):
         super().__init__()
 
@@ -37,6 +39,7 @@ class PioneerEnv(gym.Env):
         self.max_steps = max_steps
         self.sensor_limit = sensor_limit
         self.collision_threshold = collision_threshold
+        self.side_collision_threshold = side_collision_threshold
 
         self.current_step = 0
 
@@ -46,6 +49,8 @@ class PioneerEnv(gym.Env):
         self.robot_node = robot.getSelf() if hasattr(robot, "getSelf") else None
         self.initial_translation = None
         self.initial_rotation = None
+        self.previous_translation = None
+        self.total_distance = 0.0
         if self.robot_node is not None:
             self.initial_translation = self.robot_node.getField("translation").getSFVec3f()
             self.initial_rotation = self.robot_node.getField("rotation").getSFRotation()
@@ -66,6 +71,8 @@ class PioneerEnv(gym.Env):
         self._restore_robot_pose()
         self.distance_sensors.reset_history()
         self.robot.step(self.timestep)
+        self.previous_translation = self._get_robot_translation()
+        self.total_distance = 0.0
 
         observation = self._get_observation()
         dangers = self._get_dangers(observation)
@@ -85,11 +92,19 @@ class PioneerEnv(gym.Env):
 
         self.wheels.action(action)
         simulation_status = self.robot.step(self.timestep)
+        distance_moved = self._get_distance_moved()
+        self.total_distance += distance_moved
 
         observation = self._get_observation()
         dangers = self._get_dangers(observation)
-        collision = dangers["max"] >= self.collision_threshold
-        reward = self._calculate_reward(action, observation, dangers, collision)
+        collision = self._has_collision(dangers)
+        reward = self._calculate_reward(
+            action,
+            observation,
+            dangers,
+            collision,
+            distance_moved,
+        )
 
         terminated = bool(collision)
         truncated = self.current_step >= self.max_steps or simulation_status == -1
@@ -99,14 +114,15 @@ class PioneerEnv(gym.Env):
             dangers=dangers,
             collision=collision,
             simulation_ok=simulation_status != -1,
+            distance_moved=distance_moved,
         )
 
         return observation, float(reward), terminated, truncated, info
 
-    def _calculate_reward(self, action, observation, dangers, collision):
-        return reward(action, observation, dangers, collision)
+    def _calculate_reward(self, action, observation, dangers, collision, distance_moved):
+        return reward(action, observation, dangers, collision, distance_moved)
 
-    def _make_info(self, action, dangers, collision, simulation_ok):
+    def _make_info(self, action, dangers, collision, simulation_ok, distance_moved):
         return {
             "collision": bool(collision),
             "action": int(action),
@@ -116,6 +132,8 @@ class PioneerEnv(gym.Env):
             "left_danger": dangers["left"],
             "right_danger": dangers["right"],
             "simulation_ok": simulation_ok,
+            "distance_moved": distance_moved,
+            "total_distance": self.total_distance,
         }
 
     def _restore_robot_pose(self):
@@ -127,6 +145,26 @@ class PioneerEnv(gym.Env):
         self.robot_node.resetPhysics()
         if hasattr(self.robot, "simulationResetPhysics"):
             self.robot.simulationResetPhysics()
+
+    def _get_robot_translation(self):
+        if self.robot_node is None:
+            return None
+        return self.robot_node.getField("translation").getSFVec3f()
+
+    def _get_distance_moved(self):
+        current_translation = self._get_robot_translation()
+        if current_translation is None or self.previous_translation is None:
+            self.previous_translation = current_translation
+            return 0.0
+
+        distance_moved = float(
+            np.linalg.norm(
+                np.array(current_translation, dtype=np.float32)
+                - np.array(self.previous_translation, dtype=np.float32)
+            )
+        )
+        self.previous_translation = current_translation
+        return distance_moved
 
     def _get_observation(self):
         raw_values = self.distance_sensors.read_all()
@@ -163,6 +201,12 @@ class PioneerEnv(gym.Env):
             "left": self._get_left_danger(sensor_observation),
             "right": self._get_right_danger(sensor_observation),
         }
+
+    def _has_collision(self, dangers):
+        return (
+            dangers["front"] >= self.collision_threshold
+            or dangers["max"] >= self.side_collision_threshold
+        )
 
     def _get_front_danger(self, observation):
         return float(np.max(observation[list(FRONT_SENSOR_IDS)]))
