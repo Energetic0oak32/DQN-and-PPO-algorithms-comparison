@@ -10,7 +10,7 @@ A ideia geral da refatoracao foi separar responsabilidades:
 - config.py: constantes gerais do projeto.
 - actions.py: enum com as acoes discretas do robo.
 - devices.py: acesso aos sensores e motores do Webots.
-- rewards.py: funcoes de recompensa.
+- rewards.py: funcao de recompensa.
 - environment.py: ambiente Gymnasium.
 - base_controller.py: ponto de entrada do Webots, criacao do ambiente, modelo e treino.
 
@@ -32,6 +32,13 @@ HISTORY = 5
 NUM_SENSORS = 16
     Numero de sensores de distancia usados pelo Pioneer3-AT.
     O codigo busca sensores de "so0" ate "so15".
+
+OBSERVATION_SIZE = NUM_SENSORS + 4 + 4
+    Tamanho total da observacao entregue ao agente.
+    A observacao concatena:
+    - 16 leituras normalizadas dos sensores;
+    - 4 velocidades comandadas e normalizadas das rodas;
+    - 4 valores one-hot representando a ultima acao aplicada.
 
 FORWARD_SPEED = 3.0
     Velocidade aplicada aos quatro motores quando a acao e andar para frente.
@@ -78,7 +85,7 @@ Definir nomes legiveis para as acoes discretas do robo.
 
 Classe: Action(IntEnum)
 ----------------------
-Enum inteiro usado pelo ambiente, pelas rodas e pelas funcoes de recompensa.
+Enum inteiro usado pelo ambiente, pelas rodas e pela funcao de recompensa.
 Como herda de IntEnum, pode ser convertido para int e tambem pode receber um int.
 
 Valores
@@ -234,9 +241,25 @@ O que faz:
         "back right wheel"
     - Coloca cada motor em modo velocidade com setPosition(float("inf")).
     - Inicializa cada motor parado com setVelocity(0).
+    - Prepara uma lista com as velocidades comandadas para as quatro rodas.
+    - Prepara uma lista one-hot com a ultima acao aplicada.
 
 Retorno:
     Nao retorna valor. Inicializa o objeto.
+
+
+Metodo: set_speeds(self, front_left, front_right, back_left, back_right)
+-----------------------------------------------------------------------
+Argumentos:
+    front_left, front_right, back_left, back_right:
+        Velocidades aplicadas individualmente aos quatro motores.
+
+O que faz:
+    Atualiza as velocidades comandadas guardadas em self.speeds e chama
+    setVelocity() em cada motor.
+
+Retorno:
+    Nao retorna valor.
 
 
 Metodo: stop(self)
@@ -308,6 +331,7 @@ O que faz:
         forward()
         turn_left()
         turn_right()
+    Tambem atualiza self.actions com a representacao one-hot da ultima acao.
 
 Retorno:
     Nao retorna valor.
@@ -319,63 +343,100 @@ Como usar:
     wheels.action(0)
 
 
+Metodo: get_normalized_speeds(self)
+-----------------------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Divide cada velocidade comandada pelo maior valor absoluto configurado
+    entre FORWARD_SPEED e TURN_SPEED.
+
+Retorno:
+    Lista com quatro floats no intervalo entre -1.0 e 1.0.
+
+
+Metodo: get_last_action(self)
+-----------------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Retorna a representacao one-hot da ultima acao aplicada.
+
+Retorno:
+    Lista com quatro floats na ordem:
+
+        [STOP, FORWARD, TURN_LEFT, TURN_RIGHT]
+
+
 ARQUIVO: rewards.py
 ===================
 
 Objetivo
 --------
-Guardar as funcoes de recompensa separadas da logica do ambiente.
-Isso permite que PioneerBaseEnv e PioneerAdvancedEnv usem o mesmo step(), mudando
-apenas a funcao de recompensa.
+Guardar a funcao de recompensa separada da logica do ambiente.
 
 
-Funcao: simple_reward(action, dangers, collision)
--------------------------------------------------
+Funcao: split_observation(observation)
+--------------------------------------
 Assinatura:
 
-    simple_reward(action, dangers, collision)
+    split_observation(observation)
 
 Argumentos:
-    action:
-        Int ou Action representando a acao executada.
-
-    dangers:
-        Dicionario com os perigos calculados a partir da observacao normalizada.
-        Espera as chaves:
-            "max": maior valor entre todos os sensores.
-            "front": maior valor entre sensores frontais.
-            "left": maior valor entre sensores esquerdos.
-            "right": maior valor entre sensores direitos.
-
-    collision:
-        Booleano indicando se houve colisao.
+    observation:
+        Vetor completo retornado pelo ambiente.
 
 O que faz:
-    Implementa uma recompensa simples:
-    - colisao retorna -1.0;
-    - sem colisao comeca com recompensa base 0.1;
-    - andar para frente e recompensado quando a frente esta livre;
-    - andar para frente e punido quando ha muito perigo frontal;
-    - parar recebe pequena punicao;
-    - virar recebe recompensa se ha perigo frontal.
+    Separa a observacao em tres partes:
+    - sensores normalizados;
+    - velocidades comandadas e normalizadas das rodas;
+    - ultima acao em formato one-hot.
+    A recompensa usa sensores e velocidades. A acao one-hot permanece
+    disponivel na observacao entregue ao agente, mas nao precisa ser usada pela
+    recompensa porque a acao atual tambem e recebida como argumento.
 
 Retorno:
-    Float com a recompensa calculada.
+    Tupla:
 
-Como usar:
-
-    reward = simple_reward(Action.FORWARD, dangers, collision)
+        sensor_obs, speed_obs, action_obs
 
 
-Funcao: advanced_reward(action, dangers, collision)
----------------------------------------------------
+Funcao: get_sensor_metrics(sensor_obs)
+-------------------------------------
 Assinatura:
 
-    advanced_reward(action, dangers, collision)
+    get_sensor_metrics(sensor_obs)
+
+Argumentos:
+    sensor_obs:
+        Vetor com as leituras normalizadas dos sensores.
+
+O que faz:
+    Calcula metricas complementares para diferenciar um pico isolado de uma
+    regiao ocupada por obstaculos:
+    - media geral dos sensores;
+    - medias frontal, esquerda e direita;
+    - proporcao de sensores com valor maior ou igual a 0.5;
+    - proporcao de sensores com valor maior ou igual a 0.75.
+
+Retorno:
+    Dicionario com as metricas calculadas.
+
+
+Funcao: reward(action, observation, dangers, collision)
+-------------------------------------------------------
+Assinatura:
+
+    reward(action, observation, dangers, collision)
 
 Argumentos:
     action:
         Int ou Action representando a acao executada.
+
+    observation:
+        Vetor completo com sensores, velocidades comandadas das rodas e ultima acao.
 
     dangers:
         Dicionario com as chaves "max", "front", "left" e "right".
@@ -384,21 +445,24 @@ Argumentos:
         Booleano indicando se houve colisao.
 
 O que faz:
-    Implementa uma recompensa mais detalhada:
+    Implementa a recompensa usada pelo ambiente:
     - colisao retorna -10.0;
     - sem colisao comeca com recompensa base 0.05;
-    - perigo geral reduz a recompensa;
+    - perigo geral e distribuicao dos obstaculos reduzem a recompensa;
     - perigo frontal reduz ainda mais a recompensa;
     - andar para frente e bastante recompensado quando a frente esta livre;
     - virar e recompensado quando existe obstaculo frontal;
-    - virar para o lado mais seguro recebe bonus extra.
+    - virar para o lado mais seguro recebe bonus extra baseado em picos e medias
+      apenas quando existe obstaculo frontal;
+    - andar para frente recebe incentivo adicional quando o comando realmente
+      representa movimento frontal.
 
 Retorno:
     Float com a recompensa calculada.
 
 Como usar:
 
-    reward = advanced_reward(Action.TURN_LEFT, dangers, collision)
+    result = reward(Action.TURN_LEFT, observation, dangers, collision)
 
 
 ARQUIVO: environment.py
@@ -406,7 +470,7 @@ ARQUIVO: environment.py
 
 Objetivo
 --------
-Definir os ambientes Gymnasium do Pioneer3-AT.
+Definir o ambiente Gymnasium do Pioneer3-AT.
 Este arquivo deve cuidar do contrato do Gymnasium:
 
     reset() -> observation, info
@@ -420,9 +484,9 @@ Ele tambem centraliza:
     - controle de termino/truncamento do episodio.
 
 
-Classe: PioneerBaseEnv(gym.Env)
--------------------------------
-Ambiente base usando a recompensa simples.
+Classe: PioneerEnv(gym.Env)
+--------------------------
+Ambiente usado para treinamento e avaliacao.
 
 Atributos importantes:
     action_space:
@@ -430,8 +494,11 @@ Atributos importantes:
         Atualmente equivale a Discrete(4).
 
     observation_space:
-        spaces.Box(low=0.0, high=1.0, shape=(NUM_SENSORS,), dtype=np.float32).
-        Atualmente equivale a Box de 16 valores normalizados.
+        spaces.Box(low=-1.0, high=1.0, shape=(OBSERVATION_SIZE,), dtype=np.float32).
+        Atualmente equivale a Box de 24 valores:
+        - 16 sensores normalizados entre 0.0 e 1.0;
+        - 4 velocidades comandadas e normalizadas entre -1.0 e 1.0;
+        - 4 valores one-hot da ultima acao.
 
     metadata:
         {"render_modes": []}
@@ -503,8 +570,8 @@ Retorno:
         observation, info
 
     observation:
-        np.ndarray com shape (NUM_SENSORS,), dtype np.float32, valores entre
-        0.0 e 1.0.
+        np.ndarray com shape (OBSERVATION_SIZE,), dtype np.float32.
+        Atualmente possui 24 valores entre -1.0 e 1.0.
 
     info:
         Dicionario com:
@@ -538,7 +605,9 @@ Retorno:
         observation, reward, terminated, truncated, info
 
     observation:
-        np.ndarray normalizado entre 0.0 e 1.0.
+        np.ndarray com shape (OBSERVATION_SIZE,).
+        Sensores ficam entre 0.0 e 1.0; velocidades comandadas ficam entre
+        -1.0 e 1.0; a ultima acao usa representacao one-hot.
 
     reward:
         Float com recompensa calculada.
@@ -561,11 +630,14 @@ Retorno:
             "simulation_ok": bool
 
 
-Metodo: _calculate_reward(self, action, dangers, collision)
------------------------------------------------------------
+Metodo: _calculate_reward(self, action, observation, dangers, collision)
+------------------------------------------------------------------------
 Argumentos:
     action:
         Action executada.
+
+    observation:
+        Vetor completo retornado por _get_observation().
 
     dangers:
         Dicionario retornado por _get_dangers().
@@ -574,14 +646,10 @@ Argumentos:
         Booleano indicando colisao.
 
 O que faz:
-    No PioneerBaseEnv, chama simple_reward().
+    Chama reward(action, observation, dangers, collision).
 
 Retorno:
     Float com a recompensa.
-
-Observacao:
-    Este metodo existe para ser sobrescrito por subclasses.
-    PioneerAdvancedEnv sobrescreve este metodo para usar advanced_reward().
 
 
 Metodo: _make_info(self, action, dangers, collision, simulation_ok)
@@ -629,21 +697,23 @@ Argumentos:
 
 O que faz:
     - Chama distance_sensors.read_all().
-    - Converte os valores para np.float32.
-    - Divide por sensor_limit.
-    - Aplica np.clip() entre 0.0 e 1.0.
+    - Normaliza os sensores entre 0.0 e 1.0.
+    - Obtem as velocidades comandadas e normalizadas das quatro rodas.
+    - Obtem a ultima acao no formato one-hot.
+    - Concatena sensores, velocidades e acao.
 
 Retorno:
-    np.ndarray com shape (NUM_SENSORS,), valores normalizados entre 0.0 e 1.0.
+    np.ndarray com shape (OBSERVATION_SIZE,), atualmente com 24 valores.
 
 
 Metodo: _get_dangers(self, observation)
 ---------------------------------------
 Argumentos:
     observation:
-        Vetor normalizado de sensores, normalmente retornado por _get_observation().
+        Vetor completo normalmente retornado por _get_observation().
 
 O que faz:
+    Considera apenas os primeiros NUM_SENSORS valores da observacao.
     Calcula os principais indicadores de perigo:
     - max: perigo maximo geral.
     - front: perigo frontal.
@@ -712,48 +782,18 @@ Retorno:
     Nao retorna valor.
 
 
-Classe: PioneerAdvancedEnv(PioneerBaseEnv)
-------------------------------------------
-Ambiente avancado que reaproveita todo o step() de PioneerBaseEnv.
-A unica diferenca e a funcao de recompensa.
-
-Metodo: _calculate_reward(self, action, dangers, collision)
------------------------------------------------------------
-Argumentos:
-    action:
-        Action executada.
-
-    dangers:
-        Dicionario com perigos.
-
-    collision:
-        Booleano indicando colisao.
-
-O que faz:
-    Chama advanced_reward(action, dangers, collision).
-
-Retorno:
-    Float com a recompensa avancada.
-
-
 ARQUIVO: base_controller.py
 ===========================
 
 Objetivo
 --------
 Ser o ponto de entrada do controller do Webots.
-Este arquivo cria o Supervisor, escolhe ambiente, escolhe algoritmo, cria modelo,
+Este arquivo cria o Supervisor, cria o ambiente, escolhe algoritmo, cria modelo,
 opcionalmente valida o ambiente com check_env e executa o treinamento.
 
 
 Variaveis de configuracao
 -------------------------
-
-ENV_TYPE = "advanced"
-    Define qual ambiente usar.
-    Valores aceitos:
-        "base"
-        "advanced"
 
 ALGORITHM = "PPO"
     Define qual algoritmo usar.
@@ -784,16 +824,11 @@ Argumentos:
         Supervisor do Webots.
 
 O que faz:
-    - Le ENV_TYPE.
-    - Escolhe PioneerBaseEnv ou PioneerAdvancedEnv.
-    - Cria o ambiente com MAX_STEPS, SENSOR_LIMIT e COLLISION_THRESHOLD vindos
+    - Cria PioneerEnv com MAX_STEPS, SENSOR_LIMIT e COLLISION_THRESHOLD vindos
       de config.py.
 
 Retorno:
-    Instancia de PioneerBaseEnv ou PioneerAdvancedEnv.
-
-Erros:
-    Levanta ValueError se ENV_TYPE nao for "base" nem "advanced".
+    Instancia de PioneerEnv.
 
 Como usar:
 
@@ -881,7 +916,7 @@ FLUXO GERAL DE EXECUCAO
 
 1. Webots executa base_controller.py.
 2. main() cria o Supervisor.
-3. make_env(robot) cria PioneerBaseEnv ou PioneerAdvancedEnv.
+3. make_env(robot) cria PioneerEnv.
 4. O ambiente cria DistanceSensors e Wheels.
 5. make_model(env) cria PPO ou DQN.
 6. model.learn() chama reset() e step() varias vezes.
@@ -889,7 +924,7 @@ FLUXO GERAL DE EXECUCAO
     - a acao e aplicada nas rodas;
     - Webots avanca um timestep;
     - sensores sao lidos;
-    - observacao e normalizada;
+    - observacao e montada com sensores, velocidades comandadas e ultima acao;
     - perigos sao calculados;
     - recompensa e calculada;
     - o resultado e retornado no formato Gymnasium.

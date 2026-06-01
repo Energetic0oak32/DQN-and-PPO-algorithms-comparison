@@ -58,34 +58,83 @@ class Wheels:
             motor.setVelocity(0)
             self.motors.append(motor)
 
+        # mesma ordem dos motores:
+        # 0 = front left
+        # 1 = front right
+        # 2 = back left
+        # 3 = back right
+        self.speeds = [0.0, 0.0, 0.0, 0.0]
+
+        # one-hot da última ação:
+        # [STOP, FORWARD, TURN_LEFT, TURN_RIGHT]
+        self.actions = [0.0, 0.0, 0.0, 0.0]
+
+    def set_speeds(self, front_left, front_right, back_left, back_right):
+        self.speeds = [
+            front_left,
+            front_right,
+            back_left,
+            back_right,
+        ]
+
+        self.motors[0].setVelocity(front_left)
+        self.motors[1].setVelocity(front_right)
+        self.motors[2].setVelocity(back_left)
+        self.motors[3].setVelocity(back_right)
+
     def stop(self):
-        for motor in self.motors:
-            motor.setVelocity(0)
+        self.set_speeds(0.0, 0.0, 0.0, 0.0)
 
     def forward(self):
-        for motor in self.motors:
-            motor.setVelocity(FORWARD_SPEED)
+        self.set_speeds(
+            FORWARD_SPEED,
+            FORWARD_SPEED,
+            FORWARD_SPEED,
+            FORWARD_SPEED,
+        )
 
     def turn_left(self):
-        self.motors[0].setVelocity(-TURN_SPEED)
-        self.motors[2].setVelocity(-TURN_SPEED)
-        self.motors[1].setVelocity(TURN_SPEED)
-        self.motors[3].setVelocity(TURN_SPEED)
+        self.set_speeds(
+            -TURN_SPEED,  # front left
+            TURN_SPEED,   # front right
+            -TURN_SPEED,  # back left
+            TURN_SPEED,   # back right
+        )
 
     def turn_right(self):
-        self.motors[0].setVelocity(TURN_SPEED)
-        self.motors[2].setVelocity(TURN_SPEED)
-        self.motors[1].setVelocity(-TURN_SPEED)
-        self.motors[3].setVelocity(-TURN_SPEED)
+        self.set_speeds(
+            TURN_SPEED,   # front left
+            -TURN_SPEED,  # front right
+            TURN_SPEED,   # back left
+            -TURN_SPEED,  # back right
+        )
 
     def action(self, action):
         action = Action(action)
 
         if action == Action.STOP:
             self.stop()
+            self.actions = [1.0, 0.0, 0.0, 0.0]
+
         elif action == Action.FORWARD:
             self.forward()
+            self.actions = [0.0, 1.0, 0.0, 0.0]
+
         elif action == Action.TURN_LEFT:
             self.turn_left()
+            self.actions = [0.0, 0.0, 1.0, 0.0]
+
         elif action == Action.TURN_RIGHT:
             self.turn_right()
+            self.actions = [0.0, 0.0, 0.0, 1.0]
+
+    def get_normalized_speeds(self):
+        max_speed = max(abs(FORWARD_SPEED), abs(TURN_SPEED))
+
+        return [
+            speed / max_speed
+            for speed in self.speeds
+        ]
+
+    def get_last_action(self):
+        return self.actions

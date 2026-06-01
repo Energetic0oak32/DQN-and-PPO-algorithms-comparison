@@ -4,10 +4,9 @@ from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.env_checker import check_env
 
 from config import COLLISION_THRESHOLD, MAX_STEPS, SENSOR_LIMIT
-from environment import PioneerAdvancedEnv, PioneerBaseEnv
+from environment import PioneerEnv
 
 
-ENV_TYPE = "advanced"
 ALGORITHM = "PPO"
 TRAINING = True
 CHECK_ENV = False
@@ -15,17 +14,7 @@ TOTAL_TIMESTEPS = 50_000
 
 
 def make_env(robot):
-    env_classes = {
-        "base": PioneerBaseEnv,
-        "advanced": PioneerAdvancedEnv,
-    }
-
-    try:
-        env_class = env_classes[ENV_TYPE.lower()]
-    except KeyError as exc:
-        raise ValueError(f"Unknown environment type: {ENV_TYPE}") from exc
-
-    return env_class(
+    return PioneerEnv(
         robot=robot,
         max_steps=MAX_STEPS,
         sensor_limit=SENSOR_LIMIT,

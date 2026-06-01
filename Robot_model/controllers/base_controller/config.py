@@ -1,6 +1,7 @@
 HISTORY = 5
 
 NUM_SENSORS = 16
+OBSERVATION_SIZE = NUM_SENSORS + 4 + 4 #numero de sensores, + velocidade individual de rodas + ação
 
 FORWARD_SPEED = 3.0
 TURN_SPEED = 4.0

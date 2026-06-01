@@ -8,15 +8,16 @@ from config import (
     FRONT_SENSOR_IDS,
     LEFT_SENSOR_IDS,
     MAX_STEPS,
-    NUM_SENSORS,
+    OBSERVATION_SIZE,
     RIGHT_SENSOR_IDS,
     SENSOR_LIMIT,
+    NUM_SENSORS,
 )
 from devices import DistanceSensors, Wheels
-from rewards import advanced_reward, simple_reward
+from rewards import reward
 
 
-class PioneerBaseEnv(gym.Env):
+class PioneerEnv(gym.Env):
     """Gymnasium environment for the Pioneer3-AT Webots controller."""
 
     metadata = {"render_modes": []}
@@ -51,9 +52,9 @@ class PioneerBaseEnv(gym.Env):
 
         self.action_space = spaces.Discrete(len(Action))
         self.observation_space = spaces.Box(
-            low=0.0,
+            low=-1.0,
             high=1.0,
-            shape=(NUM_SENSORS,),
+            shape=(OBSERVATION_SIZE,),
             dtype=np.float32,
         )
 
@@ -88,7 +89,7 @@ class PioneerBaseEnv(gym.Env):
         observation = self._get_observation()
         dangers = self._get_dangers(observation)
         collision = dangers["max"] >= self.collision_threshold
-        reward = self._calculate_reward(action, dangers, collision)
+        reward = self._calculate_reward(action, observation, dangers, collision)
 
         terminated = bool(collision)
         truncated = self.current_step >= self.max_steps or simulation_status == -1
@@ -102,8 +103,8 @@ class PioneerBaseEnv(gym.Env):
 
         return observation, float(reward), terminated, truncated, info
 
-    def _calculate_reward(self, action, dangers, collision):
-        return simple_reward(action, dangers, collision)
+    def _calculate_reward(self, action, observation, dangers, collision):
+        return reward(action, observation, dangers, collision)
 
     def _make_info(self, action, dangers, collision, simulation_ok):
         return {
@@ -129,15 +130,38 @@ class PioneerBaseEnv(gym.Env):
 
     def _get_observation(self):
         raw_values = self.distance_sensors.read_all()
-        obs = np.array(raw_values, dtype=np.float32) / self.sensor_limit
-        return np.clip(obs, 0.0, 1.0)
+
+        sensor_obs = np.array(raw_values, dtype=np.float32) / self.sensor_limit
+        sensor_obs = np.clip(sensor_obs, 0.0, 1.0)
+
+        speed_obs = np.array(
+            self.wheels.get_normalized_speeds(),
+            dtype=np.float32,
+        )
+
+        action_obs = np.array(
+            self.wheels.get_last_action(),
+            dtype=np.float32,
+        )
+
+        obs = np.concatenate(
+            [
+                sensor_obs,
+                speed_obs,
+                action_obs,
+            ]
+        )
+
+        return obs.astype(np.float32)
 
     def _get_dangers(self, observation):
+        sensor_observation = observation[:NUM_SENSORS]
+
         return {
-            "max": float(np.max(observation)),
-            "front": self._get_front_danger(observation),
-            "left": self._get_left_danger(observation),
-            "right": self._get_right_danger(observation),
+            "max": float(np.max(sensor_observation)),
+            "front": self._get_front_danger(sensor_observation),
+            "left": self._get_left_danger(sensor_observation),
+            "right": self._get_right_danger(sensor_observation),
         }
 
     def _get_front_danger(self, observation):
@@ -151,8 +175,3 @@ class PioneerBaseEnv(gym.Env):
 
     def close(self):
         self.wheels.action(Action.STOP)
-
-
-class PioneerAdvancedEnv(PioneerBaseEnv):
-    def _calculate_reward(self, action, dangers, collision):
-        return advanced_reward(action, dangers, collision)

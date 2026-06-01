@@ -1,14 +1,12 @@
 .venv/
-__pycache__/
 **/__pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
 
 logs/
 *.zip
-Robot_model/controllers/base_controller/logs/
-Robot_model/controllers/base_controller/*.zip
 
 .DS_Store
 Thumbs.db
