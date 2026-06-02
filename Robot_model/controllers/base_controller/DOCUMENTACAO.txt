@@ -73,6 +73,17 @@ LEFT_SENSOR_IDS = (0, 1, 2)
 RIGHT_SENSOR_IDS = (5, 6, 7)
     Indices dos sensores usados para medir perigo do lado direito.
 
+RANDOM_SPAWN = True
+    Se True, cada episodio comeca em uma posicao e orientacao aleatorias.
+
+SPAWN_X_RANGE = (-2.0, 2.0)
+SPAWN_Y_RANGE = (-2.0, 2.0)
+    Intervalos usados para sortear a posicao no plano da arena.
+    Mantem margem para o corpo do robo dentro da arena 5 x 5.
+
+SPAWN_YAW_RANGE = (-3.14159, 3.14159)
+    Intervalo em radianos usado para sortear a orientacao em torno do eixo Z.
+
 Como usar
 ---------
 Importe as constantes onde forem necessarias:
@@ -704,8 +715,9 @@ Argumentos:
 
 O que faz:
     Se o robo for Supervisor e tiver robot_node:
-    - restaura translation inicial;
-    - restaura rotation inicial;
+    - restaura translation e rotation iniciais quando RANDOM_SPAWN for False;
+    - sorteia X, Y e orientacao em torno de Z quando RANDOM_SPAWN for True;
+    - preserva a altura Z inicial do robo;
     - chama resetPhysics() no node;
     - chama simulationResetPhysics() se existir no robo.
 

@@ -13,6 +13,10 @@ from config import (
     SENSOR_LIMIT,
     SIDE_COLLISION_THRESHOLD,
     NUM_SENSORS,
+    RANDOM_SPAWN,
+    SPAWN_X_RANGE,
+    SPAWN_Y_RANGE,
+    SPAWN_YAW_RANGE,
 )
 from devices import DistanceSensors, Wheels
 from rewards import reward
@@ -140,9 +144,34 @@ class PioneerEnv(gym.Env):
         if self.robot_node is None:
             return
 
-        self.robot_node.getField("translation").setSFVec3f(self.initial_translation)
-        self.robot_node.getField("rotation").setSFRotation(self.initial_rotation)
+        translation = list(self.initial_translation)
+        rotation = list(self.initial_rotation)
+
+        if RANDOM_SPAWN:
+            x = float(self.np_random.uniform(SPAWN_X_RANGE[0], SPAWN_X_RANGE[1]))
+            y = float(self.np_random.uniform(SPAWN_Y_RANGE[0], SPAWN_Y_RANGE[1]))
+            yaw = float(self.np_random.uniform(SPAWN_YAW_RANGE[0], SPAWN_YAW_RANGE[1]))
+
+            # O WorldInfo padrao usa ENU: Z eh o eixo vertical
+            translation = [
+                x,
+                y,
+                self.initial_translation[2],
+            ]
+
+            # Rotacao em torno do eixo vertical Z
+            rotation = [
+                0.0,
+                0.0,
+                1.0,
+                yaw,
+            ]
+
+        self.robot_node.getField("translation").setSFVec3f(translation)
+        self.robot_node.getField("rotation").setSFRotation(rotation)
+
         self.robot_node.resetPhysics()
+
         if hasattr(self.robot, "simulationResetPhysics"):
             self.robot.simulationResetPhysics()
 
