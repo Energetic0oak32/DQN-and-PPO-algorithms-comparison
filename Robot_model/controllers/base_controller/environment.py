@@ -17,6 +17,10 @@ from config import (
     SPAWN_X_RANGE,
     SPAWN_Y_RANGE,
     SPAWN_YAW_RANGE,
+    SPAWN_MAX_START_DANGER,
+    SPAWN_MAX_ATTEMPTS,
+    SPAWN_BLOCKED_OBJECT_TYPES,
+    SPAWN_MIN_OBJECT_DISTANCE,
 )
 from devices import DistanceSensors, Wheels
 from rewards import reward
@@ -55,6 +59,7 @@ class PioneerEnv(gym.Env):
         self.initial_rotation = None
         self.previous_translation = None
         self.total_distance = 0.0
+        self.spawn_blockers = self._get_spawn_blockers()
         if self.robot_node is not None:
             self.initial_translation = self.robot_node.getField("translation").getSFVec3f()
             self.initial_rotation = self.robot_node.getField("rotation").getSFRotation()
@@ -71,19 +76,35 @@ class PioneerEnv(gym.Env):
         super().reset(seed=seed)
         self.current_step = 0
 
-        self.wheels.action(Action.STOP)
-        self._restore_robot_pose()
-        self.distance_sensors.reset_history()
-        self.robot.step(self.timestep)
+        max_attempts = SPAWN_MAX_ATTEMPTS if RANDOM_SPAWN else 1
+        spawn_attempts = 0
+
+        for spawn_attempts in range(1, max_attempts + 1):
+            self.wheels.action(Action.STOP)
+            self._restore_robot_pose(random_spawn=RANDOM_SPAWN)
+            self.distance_sensors.reset_history()
+            self.robot.step(self.timestep)
+
+            observation = self._get_observation()
+            dangers = self._get_dangers(observation)
+
+            if not RANDOM_SPAWN or self._is_safe_spawn(dangers):
+                break
+        else:
+            self.wheels.action(Action.STOP)
+            self._restore_robot_pose(random_spawn=False)
+            self.distance_sensors.reset_history()
+            self.robot.step(self.timestep)
+            observation = self._get_observation()
+            dangers = self._get_dangers(observation)
+
         self.previous_translation = self._get_robot_translation()
         self.total_distance = 0.0
-
-        observation = self._get_observation()
-        dangers = self._get_dangers(observation)
 
         info = {
             "max_sensor_normalized": dangers["max"],
             "step": self.current_step,
+            "spawn_attempts": spawn_attempts,
         }
         return observation, info
 
@@ -140,32 +161,15 @@ class PioneerEnv(gym.Env):
             "total_distance": self.total_distance,
         }
 
-    def _restore_robot_pose(self):
+    def _restore_robot_pose(self, random_spawn=RANDOM_SPAWN):
         if self.robot_node is None:
             return
 
         translation = list(self.initial_translation)
         rotation = list(self.initial_rotation)
 
-        if RANDOM_SPAWN:
-            x = float(self.np_random.uniform(SPAWN_X_RANGE[0], SPAWN_X_RANGE[1]))
-            y = float(self.np_random.uniform(SPAWN_Y_RANGE[0], SPAWN_Y_RANGE[1]))
-            yaw = float(self.np_random.uniform(SPAWN_YAW_RANGE[0], SPAWN_YAW_RANGE[1]))
-
-            # O WorldInfo padrao usa ENU: Z eh o eixo vertical
-            translation = [
-                x,
-                y,
-                self.initial_translation[2],
-            ]
-
-            # Rotacao em torno do eixo vertical Z
-            rotation = [
-                0.0,
-                0.0,
-                1.0,
-                yaw,
-            ]
+        if random_spawn:
+            translation, rotation = self._make_random_spawn_pose()
 
         self.robot_node.getField("translation").setSFVec3f(translation)
         self.robot_node.getField("rotation").setSFRotation(rotation)
@@ -174,6 +178,103 @@ class PioneerEnv(gym.Env):
 
         if hasattr(self.robot, "simulationResetPhysics"):
             self.robot.simulationResetPhysics()
+
+    def _make_random_spawn_pose(self):
+        translation = list(self.initial_translation)
+        rotation = list(self.initial_rotation)
+
+        for _ in range(SPAWN_MAX_ATTEMPTS * 10):
+            x = float(self.np_random.uniform(SPAWN_X_RANGE[0], SPAWN_X_RANGE[1]))
+            y = float(self.np_random.uniform(SPAWN_Y_RANGE[0], SPAWN_Y_RANGE[1]))
+            yaw = float(self.np_random.uniform(SPAWN_YAW_RANGE[0], SPAWN_YAW_RANGE[1]))
+
+            # O WorldInfo padrao usa ENU: Z eh o eixo vertical
+            candidate_translation = [
+                x,
+                y,
+                self.initial_translation[2],
+            ]
+
+            if self._is_clear_of_spawn_blockers(candidate_translation):
+                translation = candidate_translation
+                rotation = [
+                    0.0,
+                    0.0,
+                    1.0,
+                    yaw,
+                ]
+                break
+
+        if not self._is_clear_of_spawn_blockers(translation):
+            raise RuntimeError(
+                "Could not find a random spawn position clear of blocked objects. "
+                "Increase SPAWN_X_RANGE/SPAWN_Y_RANGE or reduce SPAWN_MIN_OBJECT_DISTANCE."
+            )
+
+        return translation, rotation
+
+    def _get_spawn_blockers(self):
+        if not hasattr(self.robot, "getRoot"):
+            return []
+
+        root = self.robot.getRoot()
+        if root is None:
+            return []
+
+        children = root.getField("children")
+        if children is None:
+            return []
+
+        return self._find_spawn_blockers(children)
+
+    def _find_spawn_blockers(self, children_field):
+        blockers = []
+
+        for i in range(children_field.getCount()):
+            node = children_field.getMFNode(i)
+
+            if node.getTypeName() in SPAWN_BLOCKED_OBJECT_TYPES:
+                translation = self._get_node_translation(node)
+                if translation is not None:
+                    blockers.append(translation)
+
+            nested_blockers = self._find_nested_spawn_blockers(node)
+            blockers.extend(nested_blockers)
+
+        return blockers
+
+    def _find_nested_spawn_blockers(self, node):
+        children = node.getField("children")
+        if children is None:
+            return []
+
+        try:
+            return self._find_spawn_blockers(children)
+        except Exception:
+            return []
+
+    def _get_node_translation(self, node):
+        translation_field = node.getField("translation")
+        if translation_field is None:
+            return None
+
+        try:
+            return translation_field.getSFVec3f()
+        except Exception:
+            return None
+
+    def _is_clear_of_spawn_blockers(self, translation):
+        for blocker_translation in self.spawn_blockers:
+            distance = float(
+                np.linalg.norm(
+                    np.array(translation[:2], dtype=np.float32)
+                    - np.array(blocker_translation[:2], dtype=np.float32)
+                )
+            )
+            if distance < SPAWN_MIN_OBJECT_DISTANCE:
+                return False
+
+        return True
 
     def _get_robot_translation(self):
         if self.robot_node is None:
@@ -235,6 +336,12 @@ class PioneerEnv(gym.Env):
         return (
             dangers["front"] >= self.collision_threshold
             or dangers["max"] >= self.side_collision_threshold
+        )
+
+    def _is_safe_spawn(self, dangers):
+        return (
+            dangers["front"] < SPAWN_MAX_START_DANGER
+            and dangers["max"] < self.collision_threshold
         )
 
     def _get_front_danger(self, observation):

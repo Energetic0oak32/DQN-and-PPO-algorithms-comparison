@@ -1,0 +1,290 @@
+DOCUMENTACAO BASICA - BASE_CONTROLLER_REFACTOR
+=============================================
+
+Esta documentacao resume a pasta:
+
+Robot_model/controllers/base_controller_refactor/
+
+Objetivo da pasta
+-----------------
+Esta pasta contem uma versao mais limpa e modular do controller de Reinforcement
+Learning do Pioneer3-AT no Webots usando Gymnasium e Stable-Baselines3.
+
+A ideia principal e manter a logica do projeto, mas separar responsabilidades
+em arquivos pequenos:
+
+- actions.py: nomes das acoes discretas.
+- config.py: constantes gerais, pesos da recompensa e configuracoes de treino.
+- devices.py: sensores e motores do Webots.
+- danger.py: calculo de perigo, colisao e spawn seguro por sensores.
+- detectors.py: hitboxes logicas CENTER, FRONT, LEFT, RIGHT e BACK.
+- observation.py: montagem da observacao e distancia percorrida.
+- spawn.py: sorteio e aplicacao de pose inicial segura.
+- rewards.py: funcao de recompensa dividida em partes menores.
+- environment.py: ambiente Gymnasium.
+- paths.py: nomes dos arquivos de modelo e replay buffer.
+- model_factory.py: criacao, carregamento e salvamento de PPO/DQN.
+- training_callbacks.py: callback de checkpoint e metricas customizadas.
+- base_controller_refactor.py: ponto de entrada do controller.
+
+
+FLUXO GERAL
+===========
+
+1. O Webots executa base_controller_refactor.py.
+2. O controller cria um Supervisor.
+3. make_env(robot) cria um PioneerEnv.
+4. PioneerEnv cria sensores, rodas e gerenciador de spawn.
+5. make_model(env) cria ou carrega PPO/DQN.
+6. model.learn() chama reset() e step() repetidamente.
+7. Em cada step:
+   - a acao e aplicada nas rodas;
+   - a simulacao avanca um timestep;
+   - a observacao e montada;
+   - perigos e colisao sao calculados;
+   - hitboxes logicas sao avaliadas;
+   - a recompensa e calculada;
+   - o resultado volta no formato Gymnasium.
+8. O callback salva checkpoints e metricas customizadas.
+9. Ao final, o modelo e salvo.
+
+
+ARQUIVO: actions.py
+===================
+
+Define a enum Action:
+
+- Action.STOP = 0
+- Action.FORWARD = 1
+- Action.TURN_LEFT = 2
+- Action.TURN_RIGHT = 3
+
+Uso:
+
+    from actions import Action
+    action = Action(1)
+
+
+ARQUIVO: config.py
+==================
+
+Centraliza configuracoes do projeto:
+
+- sensores;
+- velocidades;
+- thresholds de colisao;
+- spawn aleatorio;
+- objetos bloqueadores de spawn;
+- pesos da recompensa;
+- parametros do treino.
+
+Valores importantes:
+
+- NUM_SENSORS = 16
+- OBSERVATION_SIZE = NUM_SENSORS + 4 + 4
+- MAX_STEPS = 5000
+- RANDOM_SPAWN = True
+- SPAWN_BLOCKED_OBJECT_TYPES = ("OilBarrel",)
+- SPAWN_MIN_OBJECT_DISTANCE = 0.85
+- ALGORITHM = "PPO"
+- TOTAL_TIMESTEPS = 200_000
+
+
+ARQUIVO: devices.py
+===================
+
+Contem:
+
+- DistanceSensors
+- Wheels
+- consoleClear()
+
+DistanceSensors
+---------------
+Busca sensores "so0" ate "so15", habilita cada um e retorna leituras com media
+movel.
+
+Metodos principais:
+
+- reset_history(): limpa historico de leituras.
+- read_all(): retorna lista com as medias atuais dos sensores.
+
+Wheels
+------
+Busca os quatro motores do Pioneer e aplica acoes.
+
+Metodos principais:
+
+- stop()
+- forward()
+- turn_left()
+- turn_right()
+- action(action)
+- get_normalized_speeds()
+- get_last_action()
+
+
+ARQUIVO: danger.py
+==================
+
+Centraliza calculos de perigo:
+
+- get_dangers(observation): retorna max, front, left e right.
+- has_collision(dangers): retorna True se houve colisao.
+- is_safe_spawn(dangers): retorna True se o spawn inicial esta seguro.
+- get_front_danger(sensor_observation)
+- get_left_danger(sensor_observation)
+- get_right_danger(sensor_observation)
+
+
+ARQUIVO: detectors.py
+=====================
+
+Usa os `Solid` definidos como CENTER, FRONT, LEFT, RIGHT e BACK como hitboxes
+logicas, sem colisao fisica.
+
+- CENTER: unico detector que encerra o episodio quando encosta em parede/barril.
+- FRONT, LEFT, RIGHT, BACK: entram na reward como sinais auxiliares.
+
+Funcao principal via classe DetectorManager:
+
+- get_hits(): retorna booleans para center, front, left, right e back.
+
+
+ARQUIVO: observation.py
+=======================
+
+Monta a observacao usada pelo agente:
+
+    [16 sensores] + [4 velocidades das rodas] + [4 valores one-hot da acao]
+
+Funcoes:
+
+- build_observation(distance_sensors, wheels, sensor_limit)
+- get_robot_translation(robot_node)
+- get_distance_moved(robot_node, previous_translation)
+
+
+ARQUIVO: spawn.py
+=================
+
+Contem a classe SpawnManager.
+
+Responsabilidades:
+
+- restaurar pose inicial;
+- sortear pose aleatoria;
+- evitar spawn perto de objetos bloqueadores, como OilBarrel;
+- aplicar translation e rotation no Supervisor;
+- resetar fisica do robo.
+
+Metodo principal:
+
+    restore_robot_pose(np_random, random_spawn=True)
+
+
+ARQUIVO: rewards.py
+===================
+
+Calcula a recompensa.
+
+Funcao principal:
+
+    reward(action, observation, dangers, collision, distance_moved)
+
+A recompensa e composta por:
+
+- penalidade por colisao;
+- recompensa base por sobreviver;
+- recompensa por distancia percorrida;
+- penalidade por ficar sem deslocamento real;
+- penalidade por perigo;
+- recompensa ou penalidade pela acao escolhida.
+- penalidade extra para giro sem progresso.
+- penalidades e bonus baseados nos detectores FRONT, LEFT, RIGHT e BACK.
+
+Funcoes auxiliares:
+
+- split_observation()
+- get_sensor_metrics()
+- movement_reward()
+- danger_penalty()
+- action_reward()
+- forward_reward()
+- stop_reward()
+- turn_reward()
+
+
+ARQUIVO: environment.py
+=======================
+
+Contem PioneerEnv, o ambiente Gymnasium.
+
+Metodos principais:
+
+- reset(seed=None, options=None)
+- step(action)
+- close()
+
+Contrato Gymnasium:
+
+    reset() -> observation, info
+    step(action) -> observation, reward, terminated, truncated, info
+
+O ambiente delega:
+
+- spawn para SpawnManager;
+- observacao para observation.py;
+- perigos para danger.py;
+- recompensa para rewards.py;
+
+
+ARQUIVO: paths.py
+=================
+
+Gera nomes de arquivos:
+
+- model_path()
+- replay_buffer_path()
+
+
+ARQUIVO: model_factory.py
+=========================
+
+Cria, carrega e salva modelos.
+
+Funcoes:
+
+- make_model(env)
+- make_ppo_model(env, saved_model)
+- make_dqn_model(env, saved_model)
+- load_replay_buffer_if_available(model)
+- save_model(model, label)
+
+
+ARQUIVO: training_callbacks.py
+==============================
+
+Contem SaveCheckpointCallback.
+
+Esse callback:
+
+- salva o modelo periodicamente;
+- registra recompensa media por step;
+- registra distancia media percorrida;
+- registra taxa de colisao;
+- registra frequencia de cada acao.
+
+
+ARQUIVO: base_controller_refactor.py
+====================================
+
+Ponto de entrada do Webots.
+
+Funcoes:
+
+- make_env(robot)
+- main()
+
+main() cria o Supervisor, cria o ambiente, cria ou carrega o modelo, executa
+treinamento, salva checkpoints e fecha o ambiente.

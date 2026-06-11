@@ -4,12 +4,13 @@ EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/project
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/RectangleArena.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/adept/pioneer3/protos/Pioneer3at.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/obstacles/protos/OilBarrel.proto"
 
 WorldInfo {
 }
 Viewpoint {
-  orientation -0.3111721485769383 0.15432530257029636 0.9377396200100528 2.2709706564865133
-  position 3.2357631522360624 -4.350805131043588 4.062009185320331
+  orientation 0.16086283322798944 -0.9732365602771647 -0.16411504082727138 4.705258976895576
+  position 0.05896495465178889 0.5777620429724311 10.702581617727974
 }
 TexturedBackground {
 }
@@ -20,6 +21,122 @@ RectangleArena {
   wallHeight 0.5
 }
 Pioneer3at {
-  controller "base_controller"
+  translation 0.169152001706126 0.9665630008292251 -0.0023889310691417587
+  rotation -2.564930065623709e-05 0.000108811876585315 0.9999999937510443 0.44354518471700616
+  controller "base_controller_refactor"
   supervisor TRUE
+  extensionSlot [
+    DEF LEFT Solid {
+      translation 0 0.6 0.165
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 1 0.501961 0.25098
+            transparency 0.65
+            roughness 0.4
+            metalness 0
+          }
+          geometry DEF LEFT_DETECTOR_GEOMETRY Cylinder {
+            height 0.05
+            radius 0.04
+            subdivision 24
+          }
+        }
+      ]
+      name "left detector"
+      model "left detector"
+      boundingObject USE LEFT_DETECTOR_GEOMETRY
+    }
+    DEF RIGHT Solid {
+      translation 0 -0.6 0.165
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 1 0.501961 0.25098
+            transparency 0.65
+            roughness 0.4
+            metalness 0
+          }
+          geometry DEF RIGHT_DETECTOR_GEOMETRY Cylinder {
+            height 0.05
+            radius 0.04
+            subdivision 24
+          }
+        }
+      ]
+      name "right detector"
+      model "right detector"
+      boundingObject USE RIGHT_DETECTOR_GEOMETRY
+    }
+    DEF FRONT Solid {
+      translation 0.7 0.01 0.165
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 1 0.501961 0.25098
+            transparency 0.65
+            roughness 0.4
+            metalness 0
+          }
+          geometry DEF FRONT_DETECTOR_GEOMETRY Cylinder {
+            height 0.05
+            radius 0.04
+            subdivision 24
+          }
+        }
+      ]
+      name "front detector"
+      model "front detector"
+      boundingObject USE FRONT_DETECTOR_GEOMETRY
+    }
+    DEF BACK Solid {
+      translation -0.6 0.01 0.165
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 1 0.501961 0.25098
+            transparency 0.65
+            roughness 0.4
+            metalness 0
+          }
+          geometry DEF BACK_DETECTOR_GEOMETRY Cylinder {
+            height 0.05
+            radius 0.04
+            subdivision 24
+          }
+        }
+      ]
+      name "back detector"
+      model "back detector"
+      boundingObject USE BACK_DETECTOR_GEOMETRY
+    }
+    DEF CENTER Solid {
+      translation 0.02 -0.01 0.325
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0 0.8 1
+            transparency 0.65
+            roughness 0.4
+            metalness 0
+          }
+          geometry DEF CENTER_DETECTOR_GEOMETRY Cylinder {
+            height 0.04
+            radius 0.3726782748276525
+            subdivision 48
+          }
+        }
+      ]
+      name "obstacle(4)"
+      model "center detector"
+      boundingObject USE CENTER_DETECTOR_GEOMETRY
+    }
+  ]
+}
+DEF MOVING_BARREL OilBarrel {
+  translation 1.13 0 0.44
+}
+DEF MOVING_BARREL OilBarrel {
+  translation -0.66 -1.35 0.44
+  name "oil barrel(1)"
 }

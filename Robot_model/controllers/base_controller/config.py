@@ -17,9 +17,14 @@ RIGHT_SENSOR_IDS = (5, 6, 7)
 
 RANDOM_SPAWN = True
 
-# Mantem margem para o corpo do robo dentro da arena 5 x 5.
-SPAWN_X_RANGE = (-2.0, 2.0)
-SPAWN_Y_RANGE = (-2.0, 2.0)
+# Mantem margem para o corpo do robo e evita comecar apontado para parede.
+SPAWN_X_RANGE = (-1.25, 1.25)
+SPAWN_Y_RANGE = (-1.25, 1.25)
 
 # Valores em radianos -pi a pi;
 SPAWN_YAW_RANGE = (-3.14159, 3.14159)
+SPAWN_MAX_START_DANGER = 0.45
+SPAWN_MAX_ATTEMPTS = 20
+
+SPAWN_BLOCKED_OBJECT_TYPES = ("OilBarrel",)
+SPAWN_MIN_OBJECT_DISTANCE = 0.85

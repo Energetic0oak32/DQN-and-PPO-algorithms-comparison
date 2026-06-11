@@ -43,13 +43,13 @@ def reward(action, observation, dangers, collision, distance_moved):
     action = Action(action)
 
     if collision:
-        return -10.0
+        return -50.0
 
     sensor_obs, speed_obs, _ = split_observation(observation)
     sensor_metrics = get_sensor_metrics(sensor_obs)
 
     # Permanecer sem colisao e positivo, mas progresso real vale mais.
-    reward = 0.02
+    reward = 0.05
 
     max_danger = dangers["max"]
     front_danger = dangers["front"]
@@ -61,24 +61,24 @@ def reward(action, observation, dangers, collision, distance_moved):
     mean_speed = float(np.mean(speed_obs))
 
     # 1. Premia deslocamento real. Girar no lugar praticamente nao pontua.
-    reward += min(distance_moved * 25.0, 0.6)
+    reward += min(distance_moved * 35.0, 0.8)
 
     # 2. Obstaculos frontais sao perigosos; obstaculos laterais podem apenas
     # indicar que o robo esta seguindo uma parede sem colidir.
-    reward -= front_danger * 0.6
-    reward -= front_mean * 0.2
+    reward -= front_danger * 0.45
+    reward -= front_mean * 0.15
 
     # 3. Proximidade critica em qualquer direcao ainda merece cautela.
-    reward -= max(0.0, max_danger - 0.75) * 1.5
+    reward -= max(0.0, max_danger - 0.75) * 1.0
 
     # 4. Recompensa andar para frente quando a frente esta livre.
     if action == Action.FORWARD:
         if front_danger < 0.25:
-            reward += 0.45
+            reward += 0.55
         elif front_danger < 0.45:
-            reward += 0.25
+            reward += 0.35
         elif front_danger < 0.65:
-            reward += 0.05
+            reward += 0.1
         else:
             reward -= 0.7
 
@@ -91,7 +91,7 @@ def reward(action, observation, dangers, collision, distance_moved):
 
     # 5. Parar e ruim, exceto em situacao de emergencia.
     elif action == Action.STOP:
-        reward -= 0.25
+        reward -= 0.35
 
         if front_danger > 0.75:
             reward += 0.2
@@ -101,7 +101,7 @@ def reward(action, observation, dangers, collision, distance_moved):
         if front_danger > 0.6:
             reward += 0.1
         else:
-            reward -= 0.3
+            reward -= 0.35
 
         # Só premia escolher o lado mais livre quando há motivo para desviar.
         if front_danger > 0.6:
@@ -116,7 +116,7 @@ def reward(action, observation, dangers, collision, distance_moved):
         if front_danger > 0.6:
             reward += 0.1
         else:
-            reward -= 0.3
+            reward -= 0.35
 
         # Só premia escolher o lado mais livre quando há motivo para desviar.
         if front_danger > 0.6:

@@ -1,0 +1,1617 @@
+DOCUMENTACAO DETALHADA - BASE_CONTROLLER_REFACTOR
+=================================================
+
+Esta documentacao descreve, em detalhes, cada arquivo, classe, funcao, argumento,
+retorno e efeito colateral da pasta:
+
+Robot_model/controllers/base_controller_refactor/
+
+Ela foi escrita para servir como guia de manutencao. A leitura basica explica
+o que existe; este arquivo explica por que cada parte existe e como ela se
+conecta com as outras.
+
+
+VISAO GERAL DA ARQUITETURA
+==========================
+
+O controller foi dividido em camadas:
+
+1. Configuracao:
+   - config.py
+   - actions.py
+
+2. Interface com Webots:
+   - devices.py
+   - spawn.py
+   - observation.py
+
+3. Logica do ambiente:
+   - danger.py
+   - detectors.py
+   - rewards.py
+   - environment.py
+
+4. Treinamento Stable-Baselines3:
+   - paths.py
+   - model_factory.py
+   - training_callbacks.py
+   - base_controller_refactor.py
+
+O arquivo environment.py continua sendo o centro do ambiente Gymnasium, mas ele
+nao precisa mais saber todos os detalhes internos de spawn, observacao, perigo e
+reward. Ele chama modulos especializados.
+
+
+ARQUIVO: actions.py
+===================
+
+Objetivo
+--------
+Dar nomes legiveis para as acoes discretas usadas pelo agente.
+
+Classe: Action(IntEnum)
+-----------------------
+Assinatura conceitual:
+
+    class Action(IntEnum):
+        STOP = 0
+        FORWARD = 1
+        TURN_LEFT = 2
+        TURN_RIGHT = 3
+
+Por que IntEnum?
+----------------
+Stable-Baselines3 trabalha com acoes discretas como inteiros. IntEnum permite
+usar nomes legiveis no codigo sem perder compatibilidade com int.
+
+Exemplos:
+
+    Action(1) == Action.FORWARD
+    int(Action.FORWARD) == 1
+
+Valores
+-------
+
+Action.STOP
+    Valor inteiro: 0.
+    Significa parar todas as rodas.
+
+Action.FORWARD
+    Valor inteiro: 1.
+    Significa aplicar velocidade positiva em todas as rodas.
+
+Action.TURN_LEFT
+    Valor inteiro: 2.
+    Significa girar para a esquerda.
+
+Action.TURN_RIGHT
+    Valor inteiro: 3.
+    Significa girar para a direita.
+
+Onde e usado
+------------
+- devices.py: Wheels.action() escolhe qual movimento executar.
+- rewards.py: reward() e action_reward() avaliam a acao.
+- environment.py: action_space usa len(Action) e step() converte o int para Action.
+
+Retorno
+-------
+Nao ha retorno direto. A classe fornece constantes nomeadas.
+
+
+ARQUIVO: config.py
+==================
+
+Objetivo
+--------
+Centralizar configuracoes e pesos numericos. Isso evita numeros magicos dentro
+da logica do projeto.
+
+Constantes de sensores
+----------------------
+
+HISTORY = 5
+    Quantidade de leituras recentes guardadas por sensor.
+    DistanceSensors usa este valor para calcular uma media movel.
+
+NUM_SENSORS = 16
+    Numero de sensores de distancia do Pioneer3-AT.
+    O codigo espera sensores nomeados de "so0" ate "so15".
+
+OBSERVATION_SIZE = NUM_SENSORS + 4 + 4
+    Tamanho total da observacao:
+    - 16 sensores;
+    - 4 velocidades normalizadas das rodas;
+    - 4 valores one-hot da ultima acao.
+
+Constantes de movimento
+-----------------------
+
+FORWARD_SPEED = 3.0
+    Velocidade usada por Wheels.forward().
+
+TURN_SPEED = 4.0
+    Velocidade usada por Wheels.turn_left() e Wheels.turn_right().
+
+Constantes de normalizacao e episodio
+-------------------------------------
+
+SENSOR_LIMIT = 1024.0
+    Divisor usado para normalizar leituras dos sensores.
+
+COLLISION_THRESHOLD = 0.8
+    Limite usado para colisao frontal.
+
+SIDE_COLLISION_THRESHOLD = 0.98
+    Limite mais alto para colisao lateral/geral.
+    Isso evita terminar o episodio so porque o robo esta perto de uma parede.
+
+MAX_STEPS = 5000
+    Numero maximo de steps por episodio.
+    Quando current_step atinge esse valor, truncated vira True.
+
+Grupos de sensores
+------------------
+
+FRONT_SENSOR_IDS = (2, 3, 4, 5)
+    Sensores usados para perigo frontal.
+
+LEFT_SENSOR_IDS = (0, 1, 2)
+    Sensores usados para perigo esquerdo.
+
+RIGHT_SENSOR_IDS = (5, 6, 7)
+    Sensores usados para perigo direito.
+
+Spawn aleatorio
+---------------
+
+RANDOM_SPAWN = True
+    Se True, o reset tenta sortear uma posicao e orientacao novas.
+
+SPAWN_X_RANGE = (-1.25, 1.25)
+SPAWN_Y_RANGE = (-1.25, 1.25)
+    Intervalos para sortear X e Y.
+    Esses limites deixam margem dentro da arena.
+
+SPAWN_YAW_RANGE = (-3.14159, 3.14159)
+    Intervalo para sortear rotacao em torno do eixo Z.
+
+SPAWN_MAX_START_DANGER = 0.45
+    Perigo frontal maximo aceito logo apos reset.
+
+SPAWN_MAX_ATTEMPTS = 20
+    Numero de tentativas do ambiente para conseguir um spawn seguro por sensores.
+
+SPAWN_BLOCKED_OBJECT_TYPES = ("OilBarrel",)
+    Tipos de objetos que bloqueiam spawn geometrico.
+    SpawnManager procura nos do Webots cujo getTypeName() esteja nesta tupla.
+
+SPAWN_MIN_OBJECT_DISTANCE = 0.85
+    Distancia minima no plano XY entre o robo e objetos bloqueadores.
+
+Pesos da reward
+---------------
+
+COLLISION_PENALTY = -50.0
+    Recompensa retornada imediatamente quando collision=True.
+
+BASE_SURVIVAL_REWARD = 0.05
+    Recompensa inicial quando nao ha colisao.
+
+DISTANCE_REWARD_MULTIPLIER = 35.0
+    Multiplicador da distancia percorrida no step.
+
+MAX_DISTANCE_REWARD = 0.8
+    Limite superior da recompensa por distancia em um unico step.
+
+NO_PROGRESS_DISTANCE_THRESHOLD = 0.002
+    Distancia minima esperada por step antes de considerar que o robo nao
+    progrediu.
+
+NO_PROGRESS_PENALTY = 0.08
+    Penalidade aplicada quando distance_moved fica abaixo do limite minimo.
+
+FRONT_DANGER_PENALTY = 0.45
+    Penalidade proporcional ao perigo frontal maximo.
+
+FRONT_MEAN_PENALTY = 0.15
+    Penalidade proporcional a media dos sensores frontais.
+
+CRITICAL_DANGER_THRESHOLD = 0.75
+    Acima desse valor, perigo geral gera penalidade extra.
+
+CRITICAL_DANGER_PENALTY = 1.0
+    Multiplicador da penalidade de perigo critico.
+
+FORWARD_CLEAR_THRESHOLD = 0.25
+FORWARD_CAUTION_THRESHOLD = 0.45
+FORWARD_DANGER_THRESHOLD = 0.65
+    Limiares usados por forward_reward().
+
+FORWARD_CLEAR_REWARD = 0.55
+FORWARD_CAUTION_REWARD = 0.35
+FORWARD_DANGER_REWARD = 0.1
+FORWARD_BLOCKED_PENALTY = 0.7
+    Recompensas ou penalidade da acao FORWARD conforme perigo frontal.
+
+FORWARD_SPEED_REWARD_MULTIPLIER = 0.2
+    Bonus proporcional a velocidade media comandada quando FORWARD e escolhido.
+
+WALL_FOLLOW_REWARD_MULTIPLIER = 0.1
+WALL_FOLLOW_LATERAL_LIMIT = 0.75
+    Pequeno bonus quando ha algo lateral e a frente esta livre.
+
+STOP_PENALTY = 0.35
+    Penalidade por parar.
+
+STOP_EMERGENCY_REWARD = 0.2
+    Pequeno bonus por parar em emergencia frontal.
+
+TURN_FRONT_DANGER_THRESHOLD = 0.6
+    Virar so e considerado util quando o perigo frontal passa desse valor.
+
+TURN_WITH_OBSTACLE_REWARD = 0.05
+TURN_WITHOUT_OBSTACLE_PENALTY = 0.35
+TURN_SAFE_SIDE_REWARD = 0.2
+TURN_UNSAFE_SIDE_PENALTY = 0.1
+TURN_SIDE_MEAN_REWARD_MULTIPLIER = 0.1
+TURN_NO_PROGRESS_PENALTY = 0.12
+    Pesos usados por turn_reward().
+
+Configuracao de treino
+----------------------
+
+ALGORITHM = "PPO"
+    Algoritmo usado por model_factory.make_model().
+
+TRAINING = True
+    Se False, o controller cria o ambiente e fecha sem treinar.
+
+CHECK_ENV = False
+    Se True, roda stable_baselines3.common.env_checker.check_env().
+
+TOTAL_TIMESTEPS = 200_000
+    Timesteps adicionais enviados para model.learn().
+
+CHECKPOINT_INTERVAL = 10_000
+    Frequencia de salvamento por SaveCheckpointCallback.
+
+MODEL_VERSION = "hitbox_reward_v1"
+    Sufixo usado para nomear modelos.
+
+
+ARQUIVO: devices.py
+===================
+
+Objetivo
+--------
+Encapsular dispositivos do Webots: sensores de distancia e motores.
+
+Funcao: consoleClear()
+----------------------
+Assinatura:
+
+    consoleClear()
+
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Imprime a sequencia ANSI "\033[H\033[2J" para limpar o console.
+
+Retorno:
+    Nenhum.
+
+Efeitos colaterais:
+    Escreve no stdout.
+
+
+Classe: DistanceSensors
+-----------------------
+
+Responsabilidade:
+    Criar, habilitar, ler e suavizar os sensores de distancia.
+
+Metodo: __init__(self, robot, timestep)
+---------------------------------------
+Argumentos:
+    robot:
+        Objeto Webots com metodo getDevice(name).
+
+    timestep:
+        Timestep usado em sensor.enable(timestep).
+
+O que faz:
+    - Inicializa listas internas.
+    - Para cada indice de 0 ate NUM_SENSORS - 1:
+      - cria nome "so{i}";
+      - busca o sensor com robot.getDevice();
+      - cria lista vazia de historico.
+    - Habilita todos os sensores.
+
+Atributos criados:
+    self.sensors:
+        Lista de objetos de sensor.
+
+    self.names:
+        Lista de nomes dos sensores.
+
+    self.raw_values:
+        Lista de listas. Cada sublista guarda as leituras recentes de um sensor.
+
+    self.avg_values:
+        Lista das medias calculadas.
+
+Retorno:
+    Nenhum.
+
+Erros possiveis:
+    Se o nome do sensor nao existir no Webots, robot.getDevice() pode falhar.
+
+
+Metodo: reset_history(self)
+---------------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Recria self.raw_values como uma lista de listas vazias e limpa avg_values.
+
+Quando usar:
+    No reset do ambiente, para impedir que leituras do episodio anterior afetem
+    a observacao inicial.
+
+Retorno:
+    Nenhum.
+
+
+Metodo: read_all(self)
+----------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Para cada sensor:
+    - chama getValue();
+    - adiciona a leitura ao historico;
+    - se o historico passou de HISTORY, remove a leitura mais antiga.
+
+Depois:
+    - limpa avg_values;
+    - calcula media de cada historico;
+    - retorna a lista de medias.
+
+Retorno:
+    list[float]
+    Uma lista com NUM_SENSORS valores.
+
+Efeitos colaterais:
+    Atualiza self.raw_values e self.avg_values.
+
+
+Classe: Wheels
+--------------
+
+Responsabilidade:
+    Controlar os quatro motores e expor informacoes da ultima acao para a
+    observacao.
+
+Metodo: __init__(self, robot)
+-----------------------------
+Argumentos:
+    robot:
+        Objeto Webots com getDevice(name).
+
+O que faz:
+    - Busca motores:
+      - "front left wheel";
+      - "front right wheel";
+      - "back left wheel";
+      - "back right wheel".
+    - Coloca todos em modo velocidade com setPosition(float("inf")).
+    - Inicializa velocidade 0.
+    - Cria self.speeds com quatro zeros.
+    - Cria self.actions com one-hot zerado.
+    - Cria self.action_handlers, um dicionario que mapeia Action para:
+      - funcao de movimento;
+      - one-hot correspondente.
+
+Retorno:
+    Nenhum.
+
+
+Metodo: set_speeds(self, front_left, front_right, back_left, back_right)
+------------------------------------------------------------------------
+Argumentos:
+    front_left:
+        Velocidade do motor dianteiro esquerdo.
+
+    front_right:
+        Velocidade do motor dianteiro direito.
+
+    back_left:
+        Velocidade do motor traseiro esquerdo.
+
+    back_right:
+        Velocidade do motor traseiro direito.
+
+O que faz:
+    - Atualiza self.speeds.
+    - Chama setVelocity() nos quatro motores.
+
+Retorno:
+    Nenhum.
+
+Efeitos colaterais:
+    Move o robo na simulacao.
+
+
+Metodo: stop(self)
+------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Chama set_speeds(0.0, 0.0, 0.0, 0.0).
+
+Retorno:
+    Nenhum.
+
+
+Metodo: forward(self)
+---------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Aplica FORWARD_SPEED nas quatro rodas.
+
+Retorno:
+    Nenhum.
+
+
+Metodo: turn_left(self)
+-----------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Aplica velocidade negativa nas rodas esquerdas e positiva nas direitas.
+
+Retorno:
+    Nenhum.
+
+
+Metodo: turn_right(self)
+------------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Aplica velocidade positiva nas rodas esquerdas e negativa nas direitas.
+
+Retorno:
+    Nenhum.
+
+
+Metodo: action(self, action)
+----------------------------
+Argumentos:
+    action:
+        int ou Action. Exemplos validos: 0, 1, 2, 3, Action.FORWARD.
+
+O que faz:
+    - Converte action para Action.
+    - Busca handler e one-hot em self.action_handlers.
+    - Executa o handler.
+    - Atualiza self.actions.
+
+Retorno:
+    Nenhum.
+
+Erros possiveis:
+    Action(action) levanta ValueError se o valor nao for uma acao valida.
+
+
+Metodo: get_normalized_speeds(self)
+-----------------------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Divide cada velocidade comandada pelo maior valor absoluto entre
+    FORWARD_SPEED e TURN_SPEED.
+
+Retorno:
+    list[float]
+    Quatro valores normalmente entre -1.0 e 1.0.
+
+
+Metodo: get_last_action(self)
+-----------------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Retorna a ultima acao em formato one-hot.
+
+Retorno:
+    list[float]
+    Ordem: [STOP, FORWARD, TURN_LEFT, TURN_RIGHT].
+
+
+ARQUIVO: danger.py
+==================
+
+Objetivo
+--------
+Centralizar metricas de perigo e colisao.
+
+Funcao: get_dangers(observation)
+--------------------------------
+Argumentos:
+    observation:
+        Vetor completo do ambiente.
+
+O que faz:
+    Pega apenas os primeiros NUM_SENSORS valores, que correspondem aos sensores.
+    Calcula:
+    - max;
+    - front;
+    - left;
+    - right.
+
+Retorno:
+    dict:
+        {
+            "max": float,
+            "front": float,
+            "left": float,
+            "right": float,
+        }
+
+
+Funcao: has_collision(dangers, collision_threshold=COLLISION_THRESHOLD,
+                      side_collision_threshold=SIDE_COLLISION_THRESHOLD)
+-----------------------------------------------------------------------
+Argumentos:
+    dangers:
+        Dicionario retornado por get_dangers().
+
+    collision_threshold:
+        Limite frontal.
+
+    side_collision_threshold:
+        Limite geral/lateral.
+
+O que faz:
+    Retorna True se:
+    - dangers["front"] >= collision_threshold; ou
+    - dangers["max"] >= side_collision_threshold.
+
+Retorno:
+    bool.
+
+
+Funcao: is_safe_spawn(dangers)
+------------------------------
+Argumentos:
+    dangers:
+        Dicionario retornado por get_dangers().
+
+O que faz:
+    Confere se o spawn inicial nao comeca com perigo frontal alto e nao esta em
+    colisao frontal.
+
+Retorno:
+    bool.
+
+
+Funcao: get_front_danger(sensor_observation)
+--------------------------------------------
+Argumentos:
+    sensor_observation:
+        Vetor com apenas sensores.
+
+O que faz:
+    Seleciona FRONT_SENSOR_IDS e retorna o maior valor.
+
+Retorno:
+    float.
+
+
+Funcao: get_left_danger(sensor_observation)
+-------------------------------------------
+Argumentos:
+    sensor_observation:
+        Vetor com apenas sensores.
+
+O que faz:
+    Seleciona LEFT_SENSOR_IDS e retorna o maior valor.
+
+Retorno:
+    float.
+
+
+Funcao: get_right_danger(sensor_observation)
+--------------------------------------------
+Argumentos:
+    sensor_observation:
+        Vetor com apenas sensores.
+
+O que faz:
+    Seleciona RIGHT_SENSOR_IDS e retorna o maior valor.
+
+Retorno:
+    float.
+
+
+ARQUIVO: detectors.py
+=====================
+
+Objetivo
+--------
+Usar os objetos `Solid` presos no `extensionSlot` do Pioneer como hitboxes
+logicas, sem colisao fisica. O Webots pode continuar avisando que `physics` e
+NULL; isso e esperado porque a deteccao aqui e feita por codigo.
+
+Detectores esperados
+--------------------
+
+CENTER
+    Hitbox principal do robo. Quando CENTER encosta logicamente em parede ou
+    barril, o episodio termina.
+
+FRONT
+    Hitbox frontal. Nao termina episodio, mas entra na reward para penalizar
+    avancar contra obstaculo.
+
+LEFT
+    Hitbox esquerda. Nao termina episodio, mas ajuda a reward a penalizar virar
+    para um lado bloqueado.
+
+RIGHT
+    Hitbox direita. Igual a LEFT, mas do lado direito.
+
+BACK
+    Hitbox traseira. Nao termina episodio, mas aplica penalidade auxiliar.
+
+Classe: DetectorManager
+-----------------------
+
+Metodo: __init__(self, supervisor)
+----------------------------------
+Argumentos:
+    supervisor:
+        Supervisor do Webots.
+
+O que faz:
+    - Busca CENTER, FRONT, LEFT, RIGHT e BACK com getFromDef().
+    - Busca barris OilBarrel no mundo.
+
+Retorno:
+    Nenhum.
+
+
+Metodo: get_hits(self)
+----------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Para cada detector encontrado:
+    - le posicao global;
+    - le raio do cilindro quando possivel;
+    - verifica se encosta nas paredes da arena;
+    - verifica se encosta em algum OilBarrel.
+
+Retorno:
+    dict:
+        {
+            "center": bool,
+            "front": bool,
+            "left": bool,
+            "right": bool,
+            "back": bool,
+        }
+
+
+ARQUIVO: observation.py
+=======================
+
+Objetivo
+--------
+Montar observacoes e calcular movimento fisico real.
+
+Funcao: build_observation(distance_sensors, wheels, sensor_limit)
+-----------------------------------------------------------------
+Argumentos:
+    distance_sensors:
+        Instancia de DistanceSensors.
+
+    wheels:
+        Instancia de Wheels.
+
+    sensor_limit:
+        Valor de normalizacao dos sensores.
+
+O que faz:
+    - Le sensores com distance_sensors.read_all().
+    - Converte para np.float32.
+    - Divide por sensor_limit.
+    - Aplica np.clip entre 0.0 e 1.0.
+    - Le velocidades normalizadas das rodas.
+    - Le ultima acao one-hot.
+    - Concatena tudo.
+
+Retorno:
+    np.ndarray dtype float32 com shape (OBSERVATION_SIZE,).
+
+Formato:
+    [sensor_obs] + [speed_obs] + [action_obs]
+
+
+Funcao: get_robot_translation(robot_node)
+-----------------------------------------
+Argumentos:
+    robot_node:
+        Node do robo obtido pelo Supervisor, ou None.
+
+O que faz:
+    Se robot_node for None, retorna None.
+    Caso contrario, le o campo "translation".
+
+Retorno:
+    list[float] com [x, y, z] ou None.
+
+
+Funcao: get_distance_moved(robot_node, previous_translation)
+------------------------------------------------------------
+Argumentos:
+    robot_node:
+        Node do robo.
+
+    previous_translation:
+        Posicao anterior [x, y, z] ou None.
+
+O que faz:
+    - Le posicao atual.
+    - Se nao houver posicao atual ou anterior, retorna distancia 0.0.
+    - Caso contrario, calcula norma euclidiana entre posicao atual e anterior.
+
+Retorno:
+    tuple:
+        distance_moved, current_translation
+
+Efeito esperado:
+    environment.py usa current_translation para atualizar self.previous_translation.
+
+
+ARQUIVO: spawn.py
+=================
+
+Objetivo
+--------
+Gerenciar spawn inicial do robo, incluindo:
+
+- pose inicial original;
+- pose aleatoria;
+- checagem de distancia ate objetos bloqueadores;
+- aplicacao de translation e rotation no Webots;
+- reset da fisica.
+
+Classe: SpawnManager
+--------------------
+
+Metodo: __init__(self, robot, robot_node, initial_translation, initial_rotation)
+-------------------------------------------------------------------------------
+Argumentos:
+    robot:
+        Supervisor do Webots.
+
+    robot_node:
+        Node do robo.
+
+    initial_translation:
+        Posicao inicial lida do campo translation.
+
+    initial_rotation:
+        Rotacao inicial lida do campo rotation.
+
+O que faz:
+    - Guarda referencias.
+    - Busca objetos bloqueadores de spawn no mundo.
+
+Retorno:
+    Nenhum.
+
+
+Metodo: restore_robot_pose(self, np_random, random_spawn=RANDOM_SPAWN)
+----------------------------------------------------------------------
+Argumentos:
+    np_random:
+        Gerador aleatorio do Gymnasium.
+
+    random_spawn:
+        Se True, sorteia pose. Se False, usa pose inicial.
+
+O que faz:
+    - Decide translation e rotation.
+    - Aplica translation no node.
+    - Aplica rotation no node.
+    - Chama resetPhysics() no node.
+    - Se existir, chama robot.simulationResetPhysics().
+
+Retorno:
+    Nenhum.
+
+Efeitos colaterais:
+    Move o robo no mundo e reseta fisica.
+
+
+Metodo: _make_random_spawn_pose(self, np_random)
+------------------------------------------------
+Argumentos:
+    np_random:
+        Gerador aleatorio do Gymnasium.
+
+O que faz:
+    - Tenta ate SPAWN_MAX_ATTEMPTS * 10 candidatos geometricos.
+    - Sorteia x, y e yaw.
+    - Mantem z inicial.
+    - Rejeita candidato perto de bloqueadores.
+    - Retorna translation e rotation.
+
+Retorno:
+    tuple:
+        translation, rotation
+
+Erros:
+    RuntimeError se nenhuma posicao livre for encontrada.
+
+
+Metodo: _get_spawn_blockers(self)
+---------------------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    - Se robot nao tiver getRoot(), retorna [].
+    - Le root.children.
+    - Procura objetos bloqueadores.
+
+Retorno:
+    list de translations.
+
+
+Metodo: _find_spawn_blockers(self, children_field)
+--------------------------------------------------
+Argumentos:
+    children_field:
+        Campo MFNode "children" de um node do Webots.
+
+O que faz:
+    Percorre filhos:
+    - se getTypeName() esta em SPAWN_BLOCKED_OBJECT_TYPES, guarda translation;
+    - tambem tenta buscar filhos aninhados.
+
+Retorno:
+    list de translations.
+
+
+Metodo: _find_nested_spawn_blockers(self, node)
+-----------------------------------------------
+Argumentos:
+    node:
+        Node do Webots.
+
+O que faz:
+    Tenta ler node.getField("children") e buscar bloqueadores recursivamente.
+
+Retorno:
+    list de translations.
+
+
+Metodo: _get_node_translation(self, node)
+-----------------------------------------
+Argumentos:
+    node:
+        Node do Webots.
+
+O que faz:
+    Tenta ler campo "translation".
+
+Retorno:
+    list[float] ou None.
+
+
+Metodo: is_clear_of_blockers(self, translation)
+-----------------------------------------------
+Argumentos:
+    translation:
+        Posicao candidata [x, y, z].
+
+O que faz:
+    Calcula distancia XY entre translation e cada bloqueador.
+    Se alguma distancia for menor que SPAWN_MIN_OBJECT_DISTANCE, retorna False.
+
+Retorno:
+    bool.
+
+
+ARQUIVO: rewards.py
+===================
+
+Objetivo
+--------
+Calcular recompensa de forma modular.
+
+Funcao: split_observation(observation)
+--------------------------------------
+Argumentos:
+    observation:
+        Vetor completo do ambiente.
+
+O que faz:
+    Divide a observacao em:
+    - sensores;
+    - velocidades;
+    - ultima acao one-hot.
+
+Retorno:
+    tuple:
+        sensor_obs, speed_obs, action_obs
+
+
+Funcao: get_sensor_metrics(sensor_obs)
+--------------------------------------
+Argumentos:
+    sensor_obs:
+        Vetor apenas com sensores normalizados.
+
+O que faz:
+    Calcula medias e proporcoes:
+    - mean;
+    - front_mean;
+    - left_mean;
+    - right_mean;
+    - near_ratio;
+    - critical_ratio.
+
+Retorno:
+    dict com as metricas.
+
+
+Funcao: reward(action, observation, dangers, collision, distance_moved)
+-----------------------------------------------------------------------
+Argumentos:
+    action:
+        int ou Action.
+
+    observation:
+        Vetor completo do ambiente.
+
+    dangers:
+        Dicionario de danger.py.
+
+    collision:
+        bool indicando colisao.
+
+    distance_moved:
+        Distancia real percorrida no ultimo step.
+
+O que faz:
+    - Se collision=True, retorna COLLISION_PENALTY.
+    - Se nao, soma:
+      - BASE_SURVIVAL_REWARD;
+      - movement_reward();
+      - no_progress_penalty();
+      - danger_penalty();
+      - action_reward().
+
+Retorno:
+    float.
+
+
+Funcao: movement_reward(distance_moved)
+---------------------------------------
+Argumentos:
+    distance_moved:
+        Distancia real do step.
+
+O que faz:
+    Calcula min(distance_moved * DISTANCE_REWARD_MULTIPLIER, MAX_DISTANCE_REWARD).
+
+Retorno:
+    float.
+
+
+Funcao: no_progress_penalty(distance_moved)
+-------------------------------------------
+Argumentos:
+    distance_moved:
+        Distancia real do step.
+
+O que faz:
+    Penaliza steps em que o robo praticamente nao saiu do lugar.
+    Isso combate o comportamento de ficar preso em quinas ou alternar giros sem
+    progresso.
+
+Retorno:
+    float negativo ou 0.0.
+
+
+Funcao: danger_penalty(dangers, sensor_metrics)
+-----------------------------------------------
+Argumentos:
+    dangers:
+        Dicionario de perigos.
+
+    sensor_metrics:
+        Dicionario de get_sensor_metrics().
+
+O que faz:
+    Penaliza:
+    - perigo frontal maximo;
+    - media frontal;
+    - perigo critico geral acima do threshold.
+
+Retorno:
+    float normalmente negativo ou zero.
+
+
+Funcao: action_reward(action, dangers, sensor_metrics, speed_obs)
+-----------------------------------------------------------------
+Argumentos:
+    action:
+        Action.
+
+    dangers:
+        Dicionario de perigos.
+
+    sensor_metrics:
+        Metricas dos sensores.
+
+    speed_obs:
+        Velocidades normalizadas das rodas.
+
+O que faz:
+    Encaminha para:
+    - forward_reward();
+    - stop_reward();
+    - turn_reward().
+
+Retorno:
+    float.
+
+
+Funcao: forward_reward(dangers, sensor_metrics, speed_obs)
+----------------------------------------------------------
+Argumentos:
+    dangers:
+        Dicionario de perigos.
+
+    sensor_metrics:
+        Metricas dos sensores.
+
+    speed_obs:
+        Velocidades normalizadas.
+
+O que faz:
+    - Recompensa FORWARD se a frente esta livre.
+    - Penaliza FORWARD se a frente esta bloqueada.
+    - Adiciona bonus por velocidade media positiva.
+    - Adiciona pequeno bonus por seguir parede lateral quando a frente esta livre.
+
+Retorno:
+    float.
+
+
+Funcao: stop_reward(dangers)
+----------------------------
+Argumentos:
+    dangers:
+        Dicionario de perigos.
+
+O que faz:
+    Penaliza parar, mas adiciona pequeno bonus se ha emergencia frontal.
+
+Retorno:
+    float.
+
+
+Funcao: turn_reward(front_danger, chosen_side_danger, opposite_side_danger,
+                    chosen_side_mean, opposite_side_mean)
+-----------------------------------------------------------------------
+Argumentos:
+    front_danger:
+        Perigo frontal.
+
+    chosen_side_danger:
+        Perigo do lado para onde a acao esta virando.
+
+    opposite_side_danger:
+        Perigo do lado oposto.
+
+    chosen_side_mean:
+        Media dos sensores do lado escolhido.
+
+    opposite_side_mean:
+        Media dos sensores do lado oposto.
+
+O que faz:
+    - Penaliza virar sem obstaculo frontal.
+    - Recompensa virar quando ha obstaculo frontal.
+    - Penaliza giro sem deslocamento real.
+    - Recompensa escolher o lado mais livre.
+    - Penaliza escolher o lado menos livre.
+    - Adiciona bonus proporcional a diferenca de medias laterais.
+
+Retorno:
+    float.
+
+
+ARQUIVO: environment.py
+=======================
+
+Objetivo
+--------
+Implementar o contrato Gymnasium do ambiente.
+
+Classe: PioneerEnv(gym.Env)
+---------------------------
+
+Metodo: __init__(self, robot, timestep=None, max_steps=MAX_STEPS,
+                 sensor_limit=SENSOR_LIMIT,
+                 collision_threshold=COLLISION_THRESHOLD,
+                 side_collision_threshold=SIDE_COLLISION_THRESHOLD)
+-----------------------------------------------------------------
+Argumentos:
+    robot:
+        Supervisor do Webots.
+
+    timestep:
+        Timestep opcional. Se None, usa robot.getBasicTimeStep().
+
+    max_steps:
+        Limite de steps por episodio.
+
+    sensor_limit:
+        Normalizador dos sensores.
+
+    collision_threshold:
+        Threshold frontal.
+
+    side_collision_threshold:
+        Threshold geral/lateral.
+
+O que faz:
+    - Salva configuracoes.
+    - Cria DistanceSensors.
+    - Cria Wheels.
+    - Le node do robo.
+    - Cria SpawnManager se houver Supervisor.
+    - Define action_space e observation_space.
+
+Retorno:
+    Nenhum.
+
+
+Metodo: reset(self, seed=None, options=None)
+--------------------------------------------
+Argumentos:
+    seed:
+        Seed do Gymnasium.
+
+    options:
+        Opcoes extras do Gymnasium. Nao usado diretamente.
+
+O que faz:
+    - Chama super().reset(seed=seed).
+    - Zera current_step.
+    - Chama _reset_until_safe_spawn().
+    - Atualiza previous_translation.
+    - Zera total_distance.
+    - Monta info.
+
+Retorno:
+    tuple:
+        observation, info
+
+
+Metodo: step(self, action)
+--------------------------
+Argumentos:
+    action:
+        int aceito pelo action_space.
+
+O que faz:
+    - Valida action_space.
+    - Converte para Action.
+    - Incrementa current_step.
+    - Aplica acao nas rodas.
+    - Avanca Webots.
+    - Calcula distancia percorrida.
+    - Monta observacao.
+    - Calcula perigos.
+    - Detecta colisao.
+    - Calcula recompensa.
+    - Calcula terminated e truncated.
+    - Monta info.
+
+Retorno:
+    tuple:
+        observation, reward, terminated, truncated, info
+
+
+Metodo: _reset_until_safe_spawn(self)
+-------------------------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Tenta resetar com spawn aleatorio ate encontrar sensores seguros.
+    Se falhar, faz reset sem spawn aleatorio.
+
+Retorno:
+    tuple:
+        observation, dangers, spawn_attempts
+
+
+Metodo: _reset_once(self, random_spawn)
+---------------------------------------
+Argumentos:
+    random_spawn:
+        bool indicando se deve usar pose aleatoria.
+
+O que faz:
+    - Para rodas.
+    - Restaura pose.
+    - Limpa historico dos sensores.
+    - Avanca um timestep.
+    - Monta observacao e perigos.
+
+Retorno:
+    tuple:
+        observation, dangers
+
+
+Metodo: _calculate_reward(self, action, observation, dangers, collision,
+                          distance_moved)
+-----------------------------------------------------------
+O que faz:
+    Chama rewards.reward().
+
+Retorno:
+    float.
+
+
+Metodo: _make_info(self, action, dangers, collision, simulation_ok,
+                   distance_moved)
+----------------------------------
+O que faz:
+    Monta o dicionario info retornado por step().
+
+Retorno:
+    dict com collision, action, step, perigos, simulation_ok, distance_moved e
+    total_distance.
+
+
+Metodo: _restore_robot_pose(self, random_spawn=RANDOM_SPAWN)
+------------------------------------------------------------
+O que faz:
+    Se existe SpawnManager, delega para spawn_manager.restore_robot_pose().
+
+Retorno:
+    Nenhum.
+
+
+Metodo: _get_robot_translation(self)
+------------------------------------
+O que faz:
+    Delega para observation.get_robot_translation().
+
+Retorno:
+    list[float] ou None.
+
+
+Metodo: _update_distance_moved(self)
+------------------------------------
+O que faz:
+    Delega para observation.get_distance_moved() e atualiza
+    self.previous_translation.
+
+Retorno:
+    float.
+
+
+Metodo: _get_observation(self)
+------------------------------
+O que faz:
+    Delega para observation.build_observation().
+
+Retorno:
+    np.ndarray.
+
+
+Metodo: _get_dangers(self, observation)
+---------------------------------------
+O que faz:
+    Delega para danger.get_dangers().
+
+Retorno:
+    dict.
+
+
+Metodo: _has_collision(self, dangers)
+-------------------------------------
+O que faz:
+    Delega para danger.has_collision() usando thresholds do ambiente.
+
+Retorno:
+    bool.
+
+
+Metodo: close(self)
+-------------------
+O que faz:
+    Para o robo com Action.STOP.
+
+Retorno:
+    Nenhum.
+
+
+ARQUIVO: paths.py
+=================
+
+Funcao: model_path()
+--------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Usa ALGORITHM e MODEL_VERSION para montar o nome base do modelo.
+
+Retorno:
+    str. Exemplo: "ppo_pioneer_stable_reward_v1_model".
+
+
+Funcao: replay_buffer_path()
+----------------------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    Usa ALGORITHM e MODEL_VERSION para montar o nome do replay buffer.
+
+Retorno:
+    str. Exemplo: "dqn_pioneer_stable_reward_v1_replay_buffer.pkl".
+
+
+ARQUIVO: model_factory.py
+=========================
+
+Funcao: make_model(env)
+-----------------------
+Argumentos:
+    env:
+        Ambiente Gymnasium.
+
+O que faz:
+    Le ALGORITHM:
+    - se PPO, chama make_ppo_model();
+    - se DQN, chama make_dqn_model();
+    - caso contrario, levanta ValueError.
+
+Retorno:
+    Modelo PPO ou DQN.
+
+
+Funcao: make_ppo_model(env, saved_model)
+----------------------------------------
+Argumentos:
+    env:
+        Ambiente.
+
+    saved_model:
+        Path para arquivo .zip salvo.
+
+O que faz:
+    - Se existe modelo salvo, carrega PPO.load().
+    - Caso contrario, cria PPO novo com hiperparametros configurados no codigo.
+
+Retorno:
+    PPO.
+
+
+Funcao: make_dqn_model(env, saved_model)
+----------------------------------------
+Argumentos:
+    env:
+        Ambiente.
+
+    saved_model:
+        Path para arquivo .zip salvo.
+
+O que faz:
+    - Se existe modelo salvo, carrega DQN.load().
+    - Tenta carregar replay buffer.
+    - Caso contrario, cria DQN novo.
+
+Retorno:
+    DQN.
+
+
+Funcao: load_replay_buffer_if_available(model)
+----------------------------------------------
+Argumentos:
+    model:
+        Modelo DQN.
+
+O que faz:
+    Se replay_buffer_path() existir, chama model.load_replay_buffer().
+
+Retorno:
+    Nenhum.
+
+
+Funcao: save_model(model, label)
+--------------------------------
+Argumentos:
+    model:
+        PPO ou DQN.
+
+    label:
+        Texto usado no print.
+
+O que faz:
+    - Salva modelo.
+    - Se for DQN, salva replay buffer.
+    - Imprime mensagem com timesteps.
+
+Retorno:
+    Nenhum.
+
+
+ARQUIVO: training_callbacks.py
+==============================
+
+Classe: SaveCheckpointCallback(BaseCallback)
+--------------------------------------------
+
+Metodo: __init__(self, save_interval=CHECKPOINT_INTERVAL)
+----------------------------------------------------------
+Argumentos:
+    save_interval:
+        Intervalo em timesteps entre checkpoints.
+
+O que faz:
+    Inicializa contadores de janela:
+    - steps;
+    - reward;
+    - distance;
+    - collisions;
+    - actions.
+
+Retorno:
+    Nenhum.
+
+
+Metodo: _on_training_start(self)
+--------------------------------
+O que faz:
+    Ajusta next_checkpoint para o proximo multiplo de save_interval acima de
+    model.num_timesteps.
+
+Retorno:
+    Nenhum.
+
+
+Metodo: _on_step(self)
+----------------------
+O que faz:
+    - Coleta metricas do step.
+    - Se chegou no checkpoint, grava metricas e salva modelo.
+
+Retorno:
+    True, para continuar treinamento.
+
+
+Metodo: _collect_step_metrics(self)
+-----------------------------------
+O que faz:
+    Le self.locals:
+    - infos;
+    - rewards;
+    - actions.
+
+    Atualiza acumuladores da janela.
+
+Retorno:
+    Nenhum.
+
+
+Metodo: _record_window_metrics(self)
+------------------------------------
+O que faz:
+    Grava no logger:
+    - custom/mean_step_reward;
+    - custom/mean_distance_moved;
+    - custom/collision_rate;
+    - custom/action_0_rate;
+    - custom/action_1_rate;
+    - custom/action_2_rate;
+    - custom/action_3_rate.
+
+    Depois zera acumuladores.
+
+Retorno:
+    Nenhum.
+
+
+ARQUIVO: base_controller_refactor.py
+====================================
+
+Funcao: make_env(robot)
+-----------------------
+Argumentos:
+    robot:
+        Supervisor do Webots.
+
+O que faz:
+    Cria PioneerEnv com parametros vindos de config.py.
+
+Retorno:
+    PioneerEnv.
+
+
+Funcao: main()
+--------------
+Argumentos:
+    Nenhum.
+
+O que faz:
+    - Cria Supervisor.
+    - Cria ambiente.
+    - Opcionalmente roda check_env.
+    - Se TRAINING=False, fecha ambiente.
+    - Cria ou carrega modelo.
+    - Executa model.learn().
+    - Usa SaveCheckpointCallback.
+    - Salva modelo final.
+    - Em KeyboardInterrupt, salva modelo interrompido.
+    - Sempre fecha ambiente no finally.
+
+Retorno:
+    Nenhum.
+
+Efeitos colaterais:
+    - Inicia treino.
+    - Escreve logs TensorBoard.
+    - Salva modelo .zip.
+    - Pode salvar replay buffer para DQN.
+
+
+CHECKLIST DE MANUTENCAO
+=======================
+
+Se quiser mudar comportamento do robo:
+    - comece por config.py;
+    - ajuste pesos da reward em config.py;
+    - se precisar mudar formula, mexa em rewards.py.
+
+Se quiser mudar observacao:
+    - ajuste OBSERVATION_SIZE em config.py;
+    - ajuste build_observation() em observation.py;
+    - ajuste split_observation() em rewards.py se a reward depender da nova parte.
+
+Se quiser mudar spawn:
+    - ajuste ranges em config.py;
+    - ajuste SpawnManager em spawn.py.
+
+Se quiser mudar algoritmo:
+    - ajuste ALGORITHM em config.py;
+    - ajuste hiperparametros em model_factory.py.
+
+Se quiser mudar metricas:
+    - ajuste SaveCheckpointCallback em training_callbacks.py.

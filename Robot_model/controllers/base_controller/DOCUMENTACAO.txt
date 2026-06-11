@@ -76,13 +76,20 @@ RIGHT_SENSOR_IDS = (5, 6, 7)
 RANDOM_SPAWN = True
     Se True, cada episodio comeca em uma posicao e orientacao aleatorias.
 
-SPAWN_X_RANGE = (-2.0, 2.0)
-SPAWN_Y_RANGE = (-2.0, 2.0)
+SPAWN_X_RANGE = (-1.25, 1.25)
+SPAWN_Y_RANGE = (-1.25, 1.25)
     Intervalos usados para sortear a posicao no plano da arena.
-    Mantem margem para o corpo do robo dentro da arena 5 x 5.
+    Mantem margem para o corpo do robo dentro da arena 5 x 5 e reduz resets
+    apontados diretamente para paredes.
 
 SPAWN_YAW_RANGE = (-3.14159, 3.14159)
     Intervalo em radianos usado para sortear a orientacao em torno do eixo Z.
+
+SPAWN_MAX_START_DANGER = 0.45
+    Maior perigo frontal aceito no inicio do episodio.
+
+SPAWN_MAX_ATTEMPTS = 20
+    Quantidade maxima de tentativas para encontrar um spawn seguro.
 
 Como usar
 ---------
@@ -464,8 +471,8 @@ Argumentos:
 
 O que faz:
     Implementa a recompensa usada pelo ambiente:
-    - colisao retorna -10.0;
-    - sem colisao comeca com recompensa base positiva 0.02;
+    - colisao retorna -50.0;
+    - sem colisao comeca com recompensa base positiva 0.05;
     - deslocamento fisico real recebe recompensa;
     - perigo frontal reduz a recompensa;
     - proximidade critica em qualquer direcao recebe penalidade adicional;
@@ -582,9 +589,11 @@ O que faz:
     - Chama super().reset(seed=seed).
     - Zera current_step.
     - Para o robo.
-    - Restaura a pose inicial se estiver usando Supervisor.
+    - Restaura a pose inicial ou sorteia uma pose segura se estiver usando Supervisor.
     - Limpa historico dos sensores.
     - Executa um step no Webots para atualizar sensores.
+    - Rejeita spawns com perigo frontal alto ou colisao imediata.
+    - Se nao encontrar spawn seguro, volta para a pose inicial.
     - Le a observacao inicial.
     - Calcula informacoes basicas.
 
@@ -601,6 +610,7 @@ Retorno:
         Dicionario com:
             "max_sensor_normalized": maior valor normalizado dos sensores.
             "step": step atual, normalmente 0 no reset.
+            "spawn_attempts": numero de tentativas usadas para iniciar o episodio.
 
 
 Metodo: step(self, action)
@@ -708,10 +718,11 @@ Retorno:
     Dicionario info.
 
 
-Metodo: _restore_robot_pose(self)
----------------------------------
+Metodo: _restore_robot_pose(self, random_spawn=RANDOM_SPAWN)
+------------------------------------------------------------
 Argumentos:
-    Nenhum.
+    random_spawn:
+        Se True, sorteia uma pose. Se False, usa a pose inicial.
 
 O que faz:
     Se o robo for Supervisor e tiver robot_node:
@@ -799,6 +810,20 @@ Retorno:
     Booleano indicando colisao.
 
 
+Metodo: _is_safe_spawn(self, dangers)
+-------------------------------------
+Argumentos:
+    dangers:
+        Dicionario com os indicadores de perigo.
+
+O que faz:
+    Verifica se o episodio pode comecar sem perigo frontal alto e sem colisao
+    imediata.
+
+Retorno:
+    Booleano indicando se o spawn e seguro.
+
+
 Metodo: _get_front_danger(self, observation)
 --------------------------------------------
 Argumentos:
@@ -884,9 +909,10 @@ CHECKPOINT_INTERVAL = 10_000
     Intervalo usado para salvar o modelo durante o treinamento.
     Evita perder toda a rodada caso a simulacao seja interrompida.
 
-MODEL_VERSION = "progress_v1"
-    Identifica checkpoints treinados com a reward baseada em deslocamento real.
-    Evita carregar automaticamente modelos antigos treinados com outra reward.
+MODEL_VERSION = "stable_reward_v1"
+    Identifica checkpoints treinados com a reward baseada em deslocamento real
+    reset aleatorio seguro e penalidade forte para colisao.
+    Evita carregar automaticamente modelos antigos.
 
 
 Classe: SaveCheckpointCallback(BaseCallback)
@@ -894,6 +920,14 @@ Classe: SaveCheckpointCallback(BaseCallback)
 Callback chamado durante o treinamento.
 Salva o modelo a cada CHECKPOINT_INTERVAL passos.
 Para DQN, salva tambem o replay buffer.
+Tambem registra metricas customizadas no TensorBoard:
+    custom/mean_step_reward
+    custom/mean_distance_moved
+    custom/collision_rate
+    custom/action_0_rate
+    custom/action_1_rate
+    custom/action_2_rate
+    custom/action_3_rate
 
 
 Funcao: make_env(robot)
@@ -932,8 +966,8 @@ Argumentos:
 O que faz:
     - Le ALGORITHM.
     - Procura o arquivo salvo correspondente ao algoritmo:
-        "ppo_pioneer_progress_v1_model.zip"
-        "dqn_pioneer_progress_v1_model.zip"
+        "ppo_pioneer_stable_reward_v1_model.zip"
+        "dqn_pioneer_stable_reward_v1_model.zip"
     - Se o arquivo existir, carrega o modelo salvo com o ambiente atual.
     - Para DQN, tambem carrega o replay buffer salvo quando ele existir.
     - Se nao existir, cria um modelo novo PPO ou DQN.
@@ -965,8 +999,8 @@ O que faz:
 
 Retorno:
     String:
-        "ppo_pioneer_progress_v1_model" se ALGORITHM = "PPO"
-        "dqn_pioneer_progress_v1_model" se ALGORITHM = "DQN"
+        "ppo_pioneer_stable_reward_v1_model" se ALGORITHM = "PPO"
+        "dqn_pioneer_stable_reward_v1_model" se ALGORITHM = "DQN"
 
 
 Funcao: replay_buffer_path()
@@ -983,7 +1017,7 @@ O que faz:
 
 Retorno:
     String:
-        "dqn_pioneer_progress_v1_replay_buffer.pkl" se ALGORITHM = "DQN"
+        "dqn_pioneer_stable_reward_v1_replay_buffer.pkl" se ALGORITHM = "DQN"
 
 
 Funcao: save_model(model, label)
